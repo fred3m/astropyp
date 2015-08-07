@@ -1,17 +1,20 @@
-Documentation
-=============
+DECam Tools: Version 0.1
+========================
 
-This is an affiliated package for the AstroPy package. The documentation for
-this package is here:
+This is the documentation for the DECam-Tools Package.
+Code and issue tracker are on `GitHub <https://github.com/fred3m/decam-tools>`_.
+
+Contents
+========
 
 .. toctree::
   :maxdepth: 2
+  
+  overview.rst
 
-  packagename/index.rst
+Indices and Tables
+==================
 
-.. note:: The layout of this directory is simply a suggestion.  To follow
-          traditional practice, do *not* edit this page, but instead place
-          all documentation for the affiliated package inside ``packagename/``.
-          The traditional practice was intended to allow the affiliated
-          package to eventually be merged into the main astropy package.
-          You can follow this practice or choose your own layout.
+* :ref:`genindex`
+* :ref:`modindex`
+* :ref:`search`

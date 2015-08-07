@@ -1,11 +1,3 @@
-***********
-DECam Tools
-***********
-
-.. image:: http://img.shields.io/badge/powered%20by-AstroPy-orange.svg?style=flat
-    :target: http://www.astropy.org
-    :alt: Powered by Astropy Badge
-
 ********
 Overview
 ********
@@ -28,10 +20,3 @@ I am not affiliated with the Dark Energy Survey, the Dark Energy Camera, CTIO, o
 but I am a graduate student in astronomy who has been reducing my own DECam images and
 thought that many of the tools I developed would be useful. Please acknowledge the use
 of this code if you use it in your research.
-
-Status reports for developers
------------------------------
-
-.. image:: https://travis-ci.org/astropy/package-template.png?branch=master
-    :target: https://travis-ci.org/astropy/package-template
-    :alt: Test Status
