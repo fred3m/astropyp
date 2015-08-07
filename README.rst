@@ -33,5 +33,5 @@ Status reports for developers
 -----------------------------
 
 .. image:: https://travis-ci.org/astropy/package-template.png?branch=master
-    :target: https://travis-ci.org/astropy/package-template
+    :target: https://travis-ci.org/fred3m/decam-tools
     :alt: Test Status
