@@ -32,6 +32,6 @@ of this code if you use it in your research.
 Status reports for developers
 -----------------------------
 
-.. image:: https://travis-ci.org/astropy/package-template.png?branch=master
+.. image:: https://travis-ci.org/fred3m/decam-tools.png?branch=master
     :target: https://travis-ci.org/fred3m/decam-tools
     :alt: Test Status
