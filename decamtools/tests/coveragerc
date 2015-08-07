@@ -1,16 +1,16 @@
 [run]
 source = {packagename}
 omit =
-   {packagename}/_astropy_init*
-   {packagename}/conftest*
-   {packagename}/cython_version*
-   {packagename}/setup_package*
-   {packagename}/*/setup_package*
-   {packagename}/*/*/setup_package*
-   {packagename}/tests/*
-   {packagename}/*/tests/*
-   {packagename}/*/*/tests/*
-   {packagename}/version*
+   decamtools/_astropy_init*
+   decamtools/conftest*
+   decamtools/cython_version*
+   decamtools/setup_package*
+   decamtools/*/setup_package*
+   decamtools/*/*/setup_package*
+   decamtools/tests/*
+   decamtools/*/tests/*
+   decamtools/*/*/tests/*
+   decamtools/version*
 
 [report]
 exclude_lines =

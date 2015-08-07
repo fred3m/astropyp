@@ -35,3 +35,6 @@ Status reports for developers
 .. image:: https://travis-ci.org/fred3m/decam-tools.png?branch=master
     :target: https://travis-ci.org/fred3m/decam-tools
     :alt: Test Status
+
+.. image:: https://coveralls.io/repos/fred3m/decam-tools/badge.svg?branch=master&service=github 
+    :target: https://coveralls.io/github/fred3m/decam-tools?branch=master
