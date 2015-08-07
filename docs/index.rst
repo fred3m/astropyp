@@ -1,4 +1,4 @@
-DECam Tools: Version 0.1
+DECam Tools: Version 0.0
 ========================
 
 This is the documentation for the DECam-Tools Package.
