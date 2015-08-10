@@ -1,0 +1,16 @@
+NUMBER                 Running object number                                     
+EXT_NUMBER             FITS extension number                                     
+XWIN_IMAGE             Windowed position estimate along x                         [pixel]
+YWIN_IMAGE             Windowed position estimate along y                         [pixel]
+ERRAWIN_IMAGE          RMS windowed pos error along major axis                    [pixel]
+ERRBWIN_IMAGE          RMS windowed pos error along minor axis                    [pixel]
+ERRTHETAWIN_IMAGE      Windowed error ellipse pos angle (CCW/x)                   [deg]
+XWIN_WORLD             Windowed position along world x axis                       [deg]
+YWIN_WORLD             Windowed position along world y axis                       [deg]
+FLUX_APER(4)              #Flux vector within fixed circular aperture(s)              [count]
+FLUXERR_APER(4)           #RMS error vector for aperture flux(es)                     [count]
+FLAGS                  Extraction flags                                          
+FLAGS_WEIGHT           Weighted extraction flags 
+FLUX_RADIUS(4)            #Fraction-of-light radii                                    [pixel]
+#VIGNET(20,20)                 #Pixel data around detection                                [count]
+ELONGATION             A_IMAGE/B_IMAGE                                           

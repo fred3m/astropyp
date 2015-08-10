@@ -1,0 +1,44 @@
+NUMBER                 Running object number                                     
+EXT_NUMBER             FITS extension number                                     
+
+XWIN_IMAGE             Windowed position estimate along x                         [pixel]
+YWIN_IMAGE             Windowed position estimate along y                         [pixel]
+ERRAWIN_IMAGE          RMS windowed pos error along major axis                    [pixel]
+ERRBWIN_IMAGE          RMS windowed pos error along minor axis                    [pixel]
+ERRTHETAWIN_IMAGE      Windowed error ellipse pos angle (CCW/x)                   [deg]
+XWIN_WORLD             Windowed position along world x axis                       [deg]
+YWIN_WORLD             Windowed position along world y axis                       [deg]
+XPSF_IMAGE             X coordinate from PSF-fitting                              [pixel]
+YPSF_IMAGE             Y coordinate from PSF-fitting                              [pixel]
+XPSF_WORLD             PSF position along world x axis                            [deg]
+YPSF_WORLD             PSF position along world y axis                            [deg]
+
+MAG_AUTO               Kron-like elliptical aperture magnitude                    [mag]
+MAGERR_AUTO            RMS error for AUTO magnitude                               [mag]
+FLAGS                  Extraction flags                                          
+FLAGS_WEIGHT           Weighted extraction flags
+
+XPSF_IMAGE             X coordinate from PSF-fitting                              [pixel]
+YPSF_IMAGE             Y coordinate from PSF-fitting                              [pixel]
+XPSF_WORLD             PSF position along world x axis                            [deg]
+YPSF_WORLD             PSF position along world y axis                            [deg]
+ALPHAPSF_SKY           Right ascension of the fitted PSF (native)                 [deg]
+DELTAPSF_SKY           Declination of the fitted PSF (native)                     [deg]
+ALPHAPSF_J2000         Right ascension of the fitted PSF (J2000)                  [deg]
+DELTAPSF_J2000         Declination of the fitted PSF (J2000)                      [deg]
+ALPHAPSF_B1950         Right ascension of the fitted PSF (B1950)                  [deg]
+DELTAPSF_B1950         Declination of the fitted PSF (B1950)                      [deg]
+FLUX_PSF               Flux from PSF-fitting                                      [count]
+FLUXERR_PSF            RMS flux error for PSF-fitting                             [count]
+MAG_PSF                Magnitude from PSF-fitting                                 [mag]
+MAGERR_PSF             RMS magnitude error from PSF-fitting                       [mag]
+NITER_PSF              Number of iterations for PSF-fitting                      
+CHI2_PSF               Reduced chi2 from PSF-fitting                             
+ERRX2PSF_IMAGE         Variance of PSF position along x                           [pixel**2]
+ERRY2PSF_IMAGE         Variance of PSF position along y                           [pixel**2]
+ERRX2PSF_WORLD         Variance of PSF position along X-WORLD (alpha)             [deg**2]
+ERRY2PSF_WORLD         Variance of PSF position along Y-WORLD (delta)             [deg**2]
+ERRAPSF_IMAGE          PSF RMS position error along major axis                    [pixel]
+ERRBPSF_IMAGE          PSF RMS position error along minor axis                    [pixel]
+ERRAPSF_WORLD          World PSF RMS position error along major axis              [pixel]
+ERRBPSF_WORLD          World PSF RMS position error along minor axis              [pixel
