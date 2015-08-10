@@ -105,6 +105,12 @@ setup(name=PACKAGENAME,
       description=DESCRIPTION,
       scripts=scripts,
       install_requires=['astropy'],
+      extras_require={
+          'all': [
+              'sqlalchemy',
+              'astromatic_wrapper'
+          ]
+      },
       author=AUTHOR,
       author_email=AUTHOR_EMAIL,
       license=LICENSE,
