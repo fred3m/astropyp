@@ -1,16 +1,16 @@
 [run]
-source = {packagename}
+source = astropyp
 omit =
-   decamtools/_astropy_init*
-   decamtools/conftest*
-   decamtools/cython_version*
-   decamtools/setup_package*
-   decamtools/*/setup_package*
-   decamtools/*/*/setup_package*
-   decamtools/tests/*
-   decamtools/*/tests/*
-   decamtools/*/*/tests/*
-   decamtools/version*
+   astropyp/_astropy_init*
+   astropyp/conftest*
+   astropyp/cython_version*
+   astropyp/setup_package*
+   astropyp/*/setup_package*
+   astropyp/*/*/setup_package*
+   astropyp/tests/*
+   astropyp/*/tests/*
+   astropyp/*/*/tests/*
+   astropyp/version*
 
 [report]
 exclude_lines =
