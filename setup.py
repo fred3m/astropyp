@@ -108,7 +108,9 @@ setup(name=PACKAGENAME,
       extras_require={
           'all': [
               'sqlalchemy',
-              'astromatic_wrapper'
+              'astromatic_wrapper',
+              'pandas',
+              'statsmodels'
           ]
       },
       author=AUTHOR,

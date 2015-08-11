@@ -4,8 +4,6 @@ Build or load an index of decam files
 from __future__ import division,print_function
 import os
 from collections import OrderedDict
-import pandas
-import numpy as np
 
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
@@ -200,6 +198,7 @@ def query(sql='select * from decam_files where PROCTYPE=="InstCal"', connection=
         Dataframe containing the result of the query
     """
     from sqlalchemy.engine.base import Engine
+    import pandas
     # If no connection is specified check in the local default directory
     if connection is None:
         ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -208,6 +207,5 @@ def query(sql='select * from decam_files where PROCTYPE=="InstCal"', connection=
     if not isinstance(connection, Engine):
         from sqlalchemy import create_engine
         connection = create_engine(connection)
-    import pandas
     df = pandas.read_sql(sql, connection)
     return df

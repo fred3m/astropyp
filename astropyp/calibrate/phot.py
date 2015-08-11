@@ -1,87 +1,7 @@
-import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
 import logging
+import astropy.units as apu
 
-logger = logging.getLogger('decamtoyz.phot')
-
-def build_rough_coeff_plot(sources, mag_name, ref_name):
-    """
-    Sometimes it is helpful to plot the average diffence for a given FOV or CCD.
-    This can help identify observations that were not photometric as the
-    avg difference vs airmass should be roughly linear.
-    
-    Parameters
-    ----------
-    sources: `astropy.table.Table`
-        Catalog of observations
-    mag_name: str
-        Name of the magnitude column in ``sources``
-    ref_name: str
-        Name of the reference magnitude column in ``sources
-    """
-    x = []
-    y = []
-    err = []
-    for airmass in np.unique(sources['airmass']).tolist():
-        x.append(airmass)
-        obs = sources[sources['airmass']==airmass]
-        obs = obs[np.isfinite(obs[mag_name]) & np.isfinite(obs[ref_name])]
-        diff = obs[mag_name]-obs[ref_name]
-        obs = obs[np.sqrt((diff-np.mean(diff))**2)<np.std(diff)]
-        median = np.median(obs[mag_name]-obs[ref_name])
-        y.append(median)
-        err.append(np.std(obs[mag_name]-obs[ref_name]))
-    plt.xlabel('Airmass')
-    plt.ylabel('Median difference in {0} magnitude'.format(mag_name))
-    plt.plot(x,y)
-    plt.errorbar(x, y, yerr=err, fmt='-o')
-    plt.show()
-
-def build_diff_plot(obs, mag_name, ref_name, mag_err_name, ref_err_name, 
-        plot_format='b.', show_stats=True, clipping=1, filename=None):
-    """
-    Plot the difference between reference magnitudes and observed magnitudes for a 
-    given set of observations
-    
-    Parameters
-    ----------
-    obs: `astropy.table.Table`
-        Catalog of observations to compare
-    mag_name: str
-        Name of the magniude column in ``obs`` to compare
-    ref_name: str
-        Name of the reference column in ``obs`` to compare
-    mag_err_name: str
-        Name of the magnitude error column
-    ref_err_name: str
-        Name of the reference error column
-    plot_format: str
-        Format for matplotlib plot points
-    show_stats: str
-        Whether or not to show the mean and standard deviation of the observations
-    """
-    diff = obs[mag_name]-obs[ref_name]
-    # Remove outlier sources
-    plot_obs = obs[np.sqrt((diff-np.mean(diff))**2) < clipping*np.std(diff)]
-    # build plot
-    x = plot_obs[mag_name]
-    y = plot_obs[mag_name]-plot_obs[ref_name]
-    err = np.sqrt(plot_obs[mag_err_name]**2+plot_obs[ref_err_name]**2)
-    plt.errorbar(x, y, yerr=err, fmt=plot_format)
-    plt.xlabel(mag_name)
-    plt.ylabel('Diff from Std Sources')
-    # show stats
-    if show_stats:
-        logger.info('mean: {0}'.format(np.mean(y)))
-        logger.info('std dev: {0}'.format(np.std(y)))
-    # Save plot or plot to screen
-    if filename is None:
-        plt.show()
-    else:
-        plt.save(filename)
-    plt.close()
-    return y
+logger = logging.getLogger('astropyp.calibrate.phot')
 
 def clean_sources(obs, mag_name, ref_name, check_columns=[], clipping=1):
     """
@@ -90,7 +10,7 @@ def clean_sources(obs, mag_name, ref_name, check_columns=[], clipping=1):
     Parameters
     ----------
     obs: structured array-like
-        astropy.table.Table, pandas.DataFrame, or structured array of observations
+        astropy.table.QTable, pandas.DataFrame, or structured array of observations
     mag_name: str
         Name of the magnitude field
     ref_name: str
@@ -106,6 +26,8 @@ def clean_sources(obs, mag_name, ref_name, check_columns=[], clipping=1):
     good_sources: structure array-like
         Good sources from the original ``obs``.
     """
+    import numpy as np
+    
     # Remove NaN values for selected columns
     if len(check_columns)>0:
         conditions = [np.isfinite(obs[col]) for col in check_columns]
@@ -132,6 +54,80 @@ def clean_sources(obs, mag_name, ref_name, check_columns=[], clipping=1):
     
     return good_sources
 
+def match_catalogs(cat1, cat2, ra1='XWIN_WORLD', dec1='YWIN_WORLD', 
+        ra2='XWIN_WORLD', dec2='YWIN_WORLD', max_separation=1*apu.arcsec):
+    """
+    Use astropy.coordinates to match sources in two catalogs and 
+    only select sources within a specified distance
+    
+    """
+    from astropy.coordinates import SkyCoord
+    import astropy.units as apu
+    
+    if isinstance(max_separation, float) or isinstance(max_separation, int):
+        max_separation = max_separation * apu.arcsec
+    c1 = SkyCoord(cat1[ra1], cat1[dec1], unit='deg')
+    c2 = SkyCoord(cat2[ra2], cat2[dec2], unit='deg')
+    idx, d2, d3 = c1.match_to_catalog_sky(c2)
+    matches = d2 < max_separation
+    return idx, matches
+
+def match_all_catalogs(catalogs, ra_names, dec_names, max_separation=1*apu.arcsec, min_detect=None):
+    """
+    Match a list of catalogs based on their ra, dec, and separation
+    """
+    if isinstance(ra_names, six.string_types):
+        ra_names = [ra_names for n in range(len(catalogs))]
+    if isinstance(dec_names, six.string_types):
+        dec_names = [dec_names for n in range(len(catalogs))]
+    catalog = catalogs[0]
+    matches = np.array([True for n in range(len(catalog))])
+    for n in range(1, len(catalogs)):
+        idx, new_matches = match_catalogs(
+            catalog, catalogs[n], ra_names[n-1], dec_names[n-1],
+            ra_names[n], dec_names[n])
+        matches = matches & new_matches
+        catalogs[n] = catalogs[n][idx]
+    for catalog in catalogs:
+        catalog = catalog[matches]
+    return catalogs
+
+def combine_catalogs(expnums, catalog_names, idx_connect_str, dirpath, mag_name, 
+        ra_names='XWIN_WORLD', dec_names='YWIN_WORLD', flux_names='FLUX_PSF', frames=None, 
+        columns=None, max_separation=1*apu.arcsec, min_detect=None):
+    """
+    Combine a list of catalogs by matching sources and combining all frames
+    into a single table
+    """
+    if isinstance(flux_names, six.string_types):
+        flux_names = [flux_names for n in range(len(catalog_names))]
+    # Set default columns
+    if columns is None:
+        columns = ['XWIN_WORLD', 'YWIN_WORLD', 'airmass', 'filename', 'frame', mag_name, 'MAG_PSF',
+            'MAG_AUTO', 'MAGERR_PSF', 'MAGERR_AUTO', 'FLAGS', 'FLAGS_WEIGHT']
+    # Get default frames
+    if frames is None:
+        hdulist = fits.open(os.path.join(dirpath, files.iloc[0].filename), memmap=True)
+        frames = range(1,len(hdulist))
+    
+    # Match sources for each individual frame, then combine the frames
+    all_frames = None
+    for frame in frames:
+        catalogs = []
+        # Get sources in each catalog for the current frame
+        for n,catalog_filename in enumerate(catalog_names):
+            cat_frame = get_phot_params(expnums[n], catalog_filename, flux_names[n], 
+                idx_connect_str, dirpath, mag_name, frame)
+            catalogs.append(cat_frame[columns])
+        # Only keep the sources found in at least min_detect catalogs
+        catalogs = match_all_catalogs(catalogs, ra_names, dec_names, max_separation, min_detect)
+        # Combine all of the frames for each catalog
+        if all_frames is None:
+            all_frames = catalogs
+        else:
+            all_frames = [vstack([all_frames[n], catalogs[n]]) for n in range(len(all_frames))]
+    return all_frames
+
 def calculate_magnitude(x, zero, color, extinct):
     """
     x[0] = reference in instrument band
@@ -149,7 +145,7 @@ def calibrate_standard(sources, mag_name, ref1_name, ref2_name, mag_err_name, re
     
     Parameters
     ----------
-    sources: `astropy.table.Table`
+    sources: `astropy.table.QTable`
         Catalog of observations
     mag_name: str
         Name of the magniude column in ``sources``
@@ -187,61 +183,6 @@ def calibrate_standard(sources, mag_name, ref1_name, ref2_name, mag_err_name, re
         good_sources['color'] = good_sources[ref1_name] - good_sources[ref2_name]
         result = smf.OLS.from_formula(formula='diff ~ color + airmass', data=good_sources).fit()
         results = [result.params.Intercept, result.params.color, result.params.airmass],result
-    else:
-        raise Exception("fit_package must be either 'statsmodels' or 'scipy'(default)")
-    logger.debug("Zero point: {0}\nColor Correction: {1}\nExtinction: {2}\n".format(*results[0]))
-    return results
-
-def calibrate_nonlinear_standard(sources, mag_name, ref1_name, ref2_name, 
-        mag_err_name, ref1_err_name, ref2_err_name, init_zero=-25, init_color=-.1, 
-        init_extinction=.1, fit_package='scipy'):
-    """
-    Calibrate a standard field with a set of refernce fields
-    
-    Parameters
-    ----------
-    sources: `astropy.table.Table`
-        Catalog of observations
-    mag_name: str
-        Name of the magniude column in ``sources``
-    ref1_name: str
-        Name of the reference column in ``sources`` in the same filter as ``mag_name``
-    ref2_name: str
-        Name of the reference column in ``sources`` to use for the color correction coefficient
-    mag_err_name: str
-        Name of the magnitude error column
-    ref1_err_name: str
-        Name of the error column for reference 1
-    ref2_err_name: str
-        Name of the error column for reference 2
-    init_zero: float
-        Initial guess for the zero point
-    init_color: float:
-        Initial guess for the color correction coefficient
-    init_extinction: float
-        Initial guess for the extinction coefficient
-    """
-    good_sources = sources
-    init_params = [init_zero, init_color, init_extinction]
-    instr_mag = good_sources[mag_name]
-    ref_mag1 = good_sources[ref1_name]
-    ref_mag2 = good_sources[ref2_name]
-    airmass = good_sources['airmass']
-    
-    if fit_package=='scipy':
-        from scipy.optimize import curve_fit
-        x = [ref_mag1,ref_mag2,airmass]
-        results = curve_fit(calculate_magnitude, x, instr_mag, init_params)
-    elif fit_package=='statsmodels':
-        import statsmodels.formula.api as smf
-        good_sources['diff'] = good_sources[mag_name] - good_sources[ref1_name]
-        good_sources['color'] = good_sources[ref1_name] - good_sources[ref2_name]
-        good_sources['color2'] = good_sources['color']**2
-        good_sources['color_airmass'] = good_sources['color']*good_sources['airmass']
-        result = smf.OLS.from_formula(formula='diff ~ color + color2 + + color_airmass + airmass', 
-            data=good_sources).fit()
-        results = [result.params.Intercept, result.params.color, result.params.color2,
-            result.params.airmass, result.params.color_airmass],result
     else:
         raise Exception("fit_package must be either 'statsmodels' or 'scipy'(default)")
     logger.debug("Zero point: {0}\nColor Correction: {1}\nExtinction: {2}\n".format(*results[0]))
@@ -317,9 +258,13 @@ def get_phot_params(expnum, catalog_filename, flux_name, idx_connect_str, dirpat
     """
     Get necessary parameters like airmass and exposure time from the FITS image headers
     """
-    from decamtoyz.index import query_idx
+    from astropyp import index
+    from astropy.io import fits
+    import numpy as np
+    from astropy.table import QTable
+    
     sql = "select * from decam_files where EXPNUM={0} and PRODTYPE='image'".format(expnum)
-    files = query_idx(sql, idx_connect_str)
+    files = index.query(sql, idx_connect_str)
     
     # Get fields from FITS header
     hdulist = fits.open(os.path.join(dirpath, files.iloc[0].filename), memmap=True)
@@ -331,7 +276,7 @@ def get_phot_params(expnum, catalog_filename, flux_name, idx_connect_str, dirpat
     logger.info('{0}: airmass={1}, exptime={2}'.format('', airmass, exptime))
     
     # add fields to catalog
-    catalog = Table.read(catalog_filename, hdu=frame)
+    catalog = QTable.read(catalog_filename, hdu=frame)
     catalog[flux_name][catalog[flux_name] * gain/exptime ==0] = np.nan
     catalog[mag_name] = -2.5*np.log10(catalog[flux_name] * gain/exptime)
     catalog['airmass'] = airmass

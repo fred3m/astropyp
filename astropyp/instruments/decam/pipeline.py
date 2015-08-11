@@ -1,13 +1,16 @@
-import astromatic_wrapper as aw
+from astropyp import pipeline
 import warnings
-from decamtoyz.utils import DecamError
 import os
 
-class Pipeline(aw.utils.pipeline.Pipeline):
+class DecamPipeError(Exception):
+    pass
+
+class Pipeline(pipeline.core.Pipeline):
     def __init__(self, **kwargs):
+        from astropyp.utils.misc import get_bool
         # Make sure that the user included a dictionary of paths to initialize the pipeline
         if 'paths' not in kwargs:
-            raise DecamError(
+            raise DecamPipeError(
                 "You must initialize a pipeline with the following paths: 'temp'")
         if('stacks' not in kwargs['paths'] or 'config' not in kwargs['paths'] 
                 or 'log' not in kwargs['paths'] or 'decam' not in kwargs['paths']):
@@ -25,11 +28,11 @@ class Pipeline(aw.utils.pipeline.Pipeline):
                         if not create_idx:
                             raise PipelineError("Unable to locate DECam file index")
                     else:
-                        if not aw.utils.pipeline.get_bool(
+                        if not get_bool(
                                 "DECam file index does not exist, create it now? ('y'/'n')"):
                             raise PipelineError("Unable to locate DECam file index")
-                    import decamtoyz.index as index
-                    recursive = aw.utils.utils.get_bool(
+                    import astropyp.index as index
+                    recursive = get_bool(
                         "Search '{0}' recursively for images? ('y'/'n')")
-                    index.build_idx(img_path, idx_connect_str, True, recursive, True)
-        aw.utils.pipeline.Pipeline.__init__(self, **kwargs)
+                    index.build(img_path, idx_connect_str, True, recursive, True)
+        pipeline.core.Pipeline.__init__(self, **kwargs)

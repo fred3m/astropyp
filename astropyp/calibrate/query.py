@@ -1,21 +1,6 @@
-import os
-import pandas
-import numpy as np
 import logging
-import shutil
-import subprocess
-import datetime
-import warnings
 
-from astropy.io import fits
-from astropy.table import Table, join, vstack
-from astropy.coordinates import SkyCoord
-from astropy.time import Time
-import astropy.units as apu
-
-import astromatic_wrapper as aw
-
-logger = logging.getLogger('decamtoyz.catalog')
+logger = logging.getLogger('astropyp.calibrate.query')
 
 catalog_info = {
     'SDSS9': {
@@ -187,6 +172,8 @@ def query_cat(catalog, min_ra, max_ra, min_dec, max_dec, columns=None,
     Use vizquery to get a reference catalog from vizier
     """
     from astroquery.vizier import Vizier
+    import numpy as np
+    from astropy.coordinates import SkyCoord
     # Build vizquery statement
     width = int(np.ceil((max_ra-min_ra)*60))
     height = int(np.ceil((max_dec-min_dec)*60))
@@ -223,6 +210,9 @@ def update_refcat(cat_name, refcat, obs_dates):
     for the J2000 positions before the proper motions are used to move the positions
     to the observed epoch.
     """
+    import numpy as np
+    import astropy.units as apu
+    
     cat_info = catalog_info[cat_name]
     
     # set the epoch of the reference observation
@@ -299,7 +289,7 @@ def update_refcat(cat_name, refcat, obs_dates):
 def cds_query(pipeline, obj, catalog, columns=None, frames=None,
         proctype='InstCal', filter_columns=None, obs_dates=None):
     """
-    Use cdsclient vizquery to query vizier and return a reference catalog
+    Query vizier and return a reference catalog
     
     Parameters
     ----------
@@ -324,16 +314,19 @@ def cds_query(pipeline, obj, catalog, columns=None, frames=None,
         reference catalog and the values are an operator (such as '>','<','=') and
         a value. For example ``filter_columns={'e_pmRA':'<200'}.
     """
-    from decamtoyz.index import query_idx
+    from astropyp import index
+    from astorpy.table import vstack
+    from astropy.time import Time
+    
     # Load a fits image for the given object
     sql = "select * from decam_obs where object like '{0}%'".format(obj)
-    exposures = query_idx(sql, pipeline.idx_connect_str).sort(['expnum'])
+    exposures = index.query(sql, pipeline.idx_connect_str).sort(['expnum'])
     exp = exposures.iloc[0]
     sql="select * from decam_files where expnum={0} and proctype='{1}'".format(
         exp['expnum'], proctype
     )
     sql += " and prodtype='image'"
-    files = query_idx(sql, pipeline.idx_connect_str).iloc[0]
+    files = index.query(sql, pipeline.idx_connect_str).iloc[0]
     hdulist = fits.open(files['filename'], memmap=True)
     if obs_dates is None:
         dates = exposures['cal_date'].unique().tolist()
@@ -375,6 +368,7 @@ def cds_query(pipeline, obj, catalog, columns=None, frames=None,
     # Sometimes the meta data is too long to save to a fits file, in which case
     # we just delete the meta data
     try:
+        import astromatic_wrapper as aw
         new_hdulist = aw.utils.ldac.convert_table_to_ldac(refcat)
     except ValueError:
         refcat.meta={}
@@ -382,39 +376,3 @@ def cds_query(pipeline, obj, catalog, columns=None, frames=None,
     cat_path = os.path.join(pipeline.paths['catalogs'], 'ref', "{0}-{1}.fits".format(obj, catalog))
     new_hdulist.writeto(cat_path, clobber=True)
     logger.info('saved {0}'.format(cat_path))
-
-def match_catalogs(cat1, cat2, ra1='XWIN_WORLD', dec1='YWIN_WORLD', 
-        ra2='XWIN_WORLD', dec2='YWIN_WORLD', max_separation=1*apu.arcsec):
-    """
-    Use astropy.coordinates to match sources in two catalogs and 
-    only select sources within a specified distance
-    
-    """
-    if isinstance(max_separation, float) or isinstance(max_separation, int):
-        max_separation = max_separation * apu.arcsec
-    c1 = SkyCoord(cat1[ra1], cat1[dec1], unit='deg')
-    c2 = SkyCoord(cat2[ra2], cat2[dec2], unit='deg')
-    idx, d2, d3 = c1.match_to_catalog_sky(c2)
-    matches = d2 < max_separation
-    return idx, matches
-
-def match_catalog_list(catalogs, ra_names, dec_names, max_separation=1*apu.arcsec, min_detect=None):
-    """
-    Match a list of catalogs to one another and only keep the sources found in 
-    all of the catalogs.
-    """
-    if isinstance(ra_names, six.string_types):
-        ra_names = [ra_names for n in range(len(catalogs))]
-    if isinstance(dec_names, six.string_types):
-        dec_names = [dec_names for n in range(len(catalogs))]
-    catalog = catalogs[0]
-    matches = np.array([True for n in range(len(catalog))])
-    for n in range(1, len(catalogs)):
-        idx, new_matches = match_catalogs(
-            catalog, catalogs[n], ra_names[n-1], dec_names[n-1],
-            ra_names[n], dec_names[n])
-        matches = matches & new_matches
-        catalogs[n] = catalogs[n][idx]
-    for catalog in catalogs:
-        catalog = catalog[matches]
-    return catalogs
