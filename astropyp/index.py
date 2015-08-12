@@ -1,211 +1,256 @@
 """
 Build or load an index of decam files
 """
-from __future__ import division,print_function
 import os
-from collections import OrderedDict
+import logging
+import warnings
 
-from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Table, Column, Integer, String, ForeignKey
-from sqlalchemy.orm import relationship, backref
-Base = declarative_base()
-from sqlalchemy.orm import sessionmaker
+logger = logging.getLogger('astropyp.index')
 
-# Map from header keys to table column names
-hdr_keys = {
-    'EXPNUM': 'expnum',
-    'EXPTIME': 'exptime',
-    'DATE-OBS': 'date_obs',
-    'MJD-OBS': 'mjd_obs',
-    'OBS-LAT': 'obs_lat',
-    'OBS-LONG': 'obs_long',
-    'PROPID': 'propid',
-    'RA': 'ra',
-    'DEC': 'dec',
-    'FILTER': 'filter',
-    'OBSTYPE': 'obstype',
-    'OBJECT': 'object',
-    'DTCALDAT': 'cal_date' # Calendar date
-}
-
-class DecamKeys(Base):
-    """
-    Typically dashes are not used in table names, and it would have been a bit of work to
-    get them working in sqlalchemy. Instead, decam_keys is a map of decam header keys to 
-    table name keys.
-    """
-    __tablename__ = 'decam_keys'
-    id = Column(Integer, primary_key=True)
-    hdr_key = Column(String, index=True, unique=True)
-    table_key = Column(String, index=True)
-
-class DecamObs(Base):
-    """
-    Table containing information about a decam observation (unique to an EXPNUM header
-    keyword)
-    """
-    __tablename__ = 'decam_obs'
-    id = Column(Integer, primary_key=True)
-    expnum = Column(String, index=True)
-    exptime = Column(String)
-    date_obs = Column(String)
-    mjd_obs = Column(String)
-    obs_lat = Column(String)
-    obs_long = Column(String)
-    propid = Column(String)
-    ra = Column(String)
-    dec = Column(String)
-    filter = Column(String)
-    obstype = Column(String)
-    object = Column(String)
-    cal_date = Column(String)
-
-class DecamFiles(Base):
-    """
-    Table containing data for all decam files
-    """
-    __tablename__ = 'decam_files'
-    id = Column(Integer, primary_key=True)
-    filename = Column(String, index=True)
-    PROCTYPE = Column(String, index=True)
-    PRODTYPE = Column(String, index=True)
-    EXPNUM = Column(String, ForeignKey('decam_obs.expnum'), index=True)
-    decam_obs = relationship(DecamObs, backref=backref('decam_files', uselist=True))
-
-def create_idx(connection=None):
+def add_tbl(connection, columns=None, tbl_name='obs', echo=False):
     """
     Create or clear a set of tables for a decam file index and create the decam_keys
     table to link decam headers to table columns
+    
+    Parameters
+    ----------
+    connection: str or `~sqlalchemy.engine.base.Engine`
+        Connection to the index database
+    columns: list of tuples
+        Columns to create in the table. This should always be a list of 
+        tuples with 3 entries:
+        
+            1. column name (str)
+            2. column data type (sqlalchemy data type, for example `Integer`)
+            3. dictionary of optional parameters
+        
+        Example: ``[('EXPNUM', Integer, {'index': True}),('RA', Float, {})]``
+    tbl_name: str
+        Name of the table to create. If the table aleady exists nothing will be done
+    echo: bool (optional)
+        For debugging purposes you may wish to view the commands being sent
+        from python to the database, in which case you should set ``echo=True``.
+    
+    Returns
+    -------
+    table_exists: bool
+        If the table already exists ``True`` is returned, otherwise ``False`` is returned
     """
-    # Init sql alquemy session to add tables
-    if connection is None:
-        ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
-        connection = 'sqlite:///'+os.path.join(ROOT_DIR,'decam.db')
-    engine = create_engine(connection)
-    Base.metadata.reflect(engine)
-    Base.metadata.create_all(engine)
-    DBSession = sessionmaker(bind=engine)
-    session = DBSession()
-    # If any of the tables already exist, delete all of the rows
-    if engine.has_table('decam_keys'):
-        session.query(DecamKeys).delete()
-    if engine.has_table('decam_files'):
-        session.query(DecamFiles).delete()
-    if engine.has_table('decam_obs'):
-        session.query(DecamObs).delete()
-    # Typically dashes are not used in table names, and it would have been a bit of work to
-    # get them working in sqlalchemy. Instead, decam_keys is a map of decam header keys to 
-    # table name keys.
-    for k,v in hdr_keys.items():
-        decam_key = DecamKeys(hdr_key=k, table_key=v)
-        session.add(decam_key)
-    session.commit()
-    session.close()
+    from sqlalchemy import create_engine, MetaData, Table, Column, ForeignKey
+    from sqlalchemy import Integer, Float, String
+    
+    engine = create_engine(connection, echo=echo)
+    meta = MetaData()
+    
+    # check if the table name already exists
+    if tbl_name in meta.tables.keys():
+        warnings.warn('Table "{0}" already exists'.format(tbl_name))
+        return True
+    
+    # Default column names for DECam (remove later)
+    default_columns = [
+        ('id', Integer, {'primary_key':True}),
+        ('EXPNUM', Integer, {'index':True}),
+        ('EXPTIME', Float, {}),
+        ('DATE-OBS', Integer, {}),
+        ('MJD-OBS', Float, {}),
+        ('OBS-LAT', String, {}),
+        ('OBS-LONG', String, {}),
+        ('PROPID', String, {}),
+        ('RA', String, {}),
+        ('DEC', String, {}),
+        ('FILTER', String, {}),
+        ('OBSTYPE', String, {}),
+        ('OBJECT', String, {}),
+        ('DTCALDAT', String, {}),
+        ('filename', String, {'index': True}),
+        ('PROCTYPE', String, {'index': True}),
+        ('PRODTYPE', String, {'index': True}),
+    ]
+    
+    # Include default columns if the user keys included a '*' or if the user 
+    # didn't specify any header keys
+    if columns is None:
+        columns = default_columns
+    elif '*' in columns:
+        columns = default_columns+columns
+    
+    # Create the table
+    tbl_columns = [Column(col[0],col[1],**col[2]) for col in columns]
+    tbl = Table(tbl_name, meta, *tbl_columns)
+    tbl.create(engine, checkfirst=True)
+    return False
 
-def get_dirs(path):
-    return [p for p in os.listdir(path) if os.path.isdir(os.path.join(path,p))]
+def valid_ext(filename, extensions):
+    """
+    Check if a filename ends with a valid extension
+    """
+    from astropy.extern import six
+    if isinstance(extensions, six.string_types):
+        extensions = [extensions]
+    if any([filename.endswith(ext) for ext in extensions]):
+        return True
+    return False
 
 def get_files(path):
-    return [f for f in os.listdir(path) if os.path.isfile(os.path.join(path,f))]
+    """
+    Get all the files in a directory
+    """
+    return [os.path.join(path, f) for f in os.listdir(path) if os.path.isfile(os.path.join(path,f))]
 
-def build(img_path='.', connection=None, create_new=False, recursive=False, no_warnings=True):
+def add_files(connection, tbl_name, filenames=None, paths=None, recursive=False, 
+        no_warnings=True, column_func=None, extensions=['.fits','.fits.fz']):
     """
-    Given a path to a set of decamfiles
+    Add fits header information to a database table.
+    
+    Parameters
+    ----------
+    connection: str or `~sqlalchemy.engine.base.Engine`
+        Connection to the index database
+    tbl_name: str
+        Name of the table to add the files
+    filenames: str or list (optional)
+        Filename or list of filenames to add to the table
+    paths: str or list (optional)
+        Path or list of paths to search for files to add to the table. Only
+        files that end with one of the ``extensions`` will be added.
+    recursive: bool (optional)
+        If ``recursive==True`` each path in ``paths`` will be recursively searched
+        for files that end with one of the ``extensions``. The default value is
+        ``False``.
+    no_warnings: bool (optional)
+        Often very old (or very new) fits files generate warnings in astropy.
+        It is often useful to ignore these so the default is to ignore warnings
+        (``no_warnings==True``).
+    column_func: function (optional)
+        It may be useful to calculate certain quantities like airmass that might not
+        be in the fits header and store them in the table. If a ``column_func`` is
+        passed to ``add_files`` it should receive the parameters ``hdulist`` and
+        ``header_values``, a dictionary of all of the header values to be written
+        to database. Any new keys should be added to ``header_values`` and the
+        function should also return the modified ``header_values`` variable.
+    extensions: list (optional)
+        List of file extensions to search for in ``paths``. The default
+        is ``extensions=['.fits','.fits.fz']
+    
+    Returns
+    -------
+    new_files: list
+        List of files added to the database
+    duplicates: list
+        List of files already contained in the database
     """
-    import astropy.io.fits as pyfits
+    from astropy.io import fits
+    from sqlalchemy import create_engine, MetaData
+    from sqlalchemy.orm import sessionmaker
+    from astropy.extern import six
+    
     # Sometimes older (or newer) fits files generate warnings by astropy, which a user
     # probably wants to suppress while building the image index
     if no_warnings:
         import warnings
         warnings.filterwarnings("ignore")
-        
-    if create_new:
-        create_idx(connection)
-    # Walk through the given path and add all of the files to the index
-    if recursive:
-        paths = os.walk(img_path)
-    else:
-        paths = [[img_path, get_dirs(img_path), get_files(img_path)]]
-    # Open connection to database
-    if connection is None:
-        ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
-        connection = 'sqlite:///'+os.path.join(ROOT_DIR,'decam.db')
+    
+    # Open connection to database and load the table information
     engine = create_engine(connection)
-    Base.metadata.reflect(engine)
-    Base.metadata.create_all(engine)
-    DBSession = sessionmaker(bind=engine)
-    session = DBSession()
-    exposures = []
-    # Iterate through paths to look for files to add
-    for root, dirs, files in paths:
-        print('root:', root)
-        for n, filename in enumerate(files):
-            print(n, filename)
-            if filename.endswith('.fits.fz'):
-                #print(filename)
-                # Add the file to the index
-                filepath = os.path.join(root, filename)
-                hdulist = pyfits.open(filepath)
-                # If the exposure has not been added to observations yet, add it now
-                if hdulist[0].header['EXPNUM'] not in exposures :
-                    exposures.append(hdulist[0].header['EXPNUM'])
-                    hdr = {}
-                    for hdr_key, tbl_key in hdr_keys.items():
-                        if hdr_key in hdulist[0].header:
-                            hdr[tbl_key] = hdulist[0].header[hdr_key]
-                        elif hdr_key in hdulist[1].header:
-                            hdr[tbl_key] = hdulist[1].header[hdr_key]
-                    decam_obs = DecamObs(**hdr)
-                    session.add(decam_obs)
-                # Add the file info to the table
-                kwargs = {
-                    'PROCTYPE': hdulist[0].header['PROCTYPE'],
-                    'PRODTYPE': hdulist[0].header['PRODTYPE']
-                }
-                kwargs['filename'] = filepath
-                # If the image is a stack, add all of the exposures combined in the stack,
-                # otherwise just add the EXPNUM field
-                if hdulist[0].header['PROCTYPE'] == 'Stacked':
-                    exps = [v[6:].lstrip('0') for k,v in hdulist[0].header.items() 
-                        if k.startswith('IMCMB')]
-                else:
-                    exps = [hdulist[0].header['EXPNUM']]
-                for exp in exps:
-                    kwargs['EXPNUM'] = exp
-                    decam_file = DecamFiles(**kwargs)
-                    session.add(decam_file)
-            else:
-                print('Skipping', filename,'\n\n')
-    session.commit()
+    conn = engine.connect()
+    meta = MetaData()
+    meta.reflect(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    
+    # Get information about objects in the database (to prevent duplicate entries)
+    tbl = meta.tables[tbl_name]
+    old_filepaths = [f[0] for f in session.query(tbl.columns.filename).all()]
     session.close()
+    
+    # Search all filepaths for fits files
+    if paths is not None:
+        import itertools
+        if isinstance(paths, six.string_types):
+            paths = [paths]
+        logger.info('paths: {0}'.format(paths))
+        filepaths = []
+        for path in paths:
+            if recursive:
+                filepaths.append(list(itertools.chain.from_iterable(
+                    [[os.path.join(root, f) for f in files if valid_ext(f, extensions)] 
+                        for root,dirs,files in os.walk(path)])))
+            else:
+                filepaths.append(get_files(path))
+        # Flatten the list of lists
+        filepaths = list(itertools.chain.from_iterable(filepaths))
+    else:
+        filepaths = []
+    
+    # Add any files specified by the user
+    if filenames is not None:
+        if isinstance(filenames, six.string_types):
+            filenames = [filenames]
+        filepaths = filepaths+filenames
+    
+    duplicates = []
+    new_files = []
+    # Iterate through paths to look for files to add
+    for n, filepath in enumerate(filepaths):
+        logger.info('{0} of {1}: {2}'.format(n, len(filepaths),filepath))
+        if filepath not in old_filepaths:
+            # Add header keys
+            hdulist = fits.open(filepath, memmap=True)
+            header_values = {}
+            for col in tbl.columns:
+                key = col.name
+                if key in hdulist[0].header:
+                    header_values[key] = hdulist[0].header[key]
+                elif len(hdulist)>1 and key in hdulist[1].header:
+                    header_values[key] = hdulist[1].header[key]
+            header_values['filename'] = filepath
+            
+            # Run a code to calculate custom columns 
+            #(for example if airmass is not in the header)
+            if column_func is not None:
+                header_values = column_func(hdulist, header_values)
+            
+            #Insert values into the table
+            ins = tbl.insert().values(**header_values)
+            conn.execute(ins)
+            new_files.append(filepath)
+        else:
+            logger.info('duplicate: {0}'.format(filepath))
+            duplicates.append(filepath)
+    
+    logger.debug('New files added: \n{0}'.format(new_files))
+    logger.info('All duplicates: \n{0}'.format(duplicates))
+    
+    return new_files, duplicates
 
-def query(sql='select * from decam_files where PROCTYPE=="InstCal"', connection=None):
+def query(sql, connection):
     """
-    Query a decam index
+    Query the index
     
     Parameters
     ----------
     sql: str
-        Query to perform on the decam index database
-    connection: str or `sqlalchemy.engine.base.Engine`
-        If connection is a string then a sqlalchemy Engine will be created, otherwise
-        ``connection`` is an sqlalchemy database engine that will be used for the query
+        SQL expression to execute on the database
+    connection: str or `~sqlalchemy.engine.base.Engine`
+        Connection to the index database
     
     Returns
     -------
-    df: `pandas.DataFrame`
-        Dataframe containing the result of the query
+    result: `~astropy.table.QTable`
     """
-    from sqlalchemy.engine.base import Engine
-    import pandas
-    # If no connection is specified check in the local default directory
-    if connection is None:
-        ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
-        connection = 'sqlite:///'+os.path.join(ROOT_DIR,'decam.db')
-    # If the connection is a string instead of an engine, create a db Engine from the connection
-    if not isinstance(connection, Engine):
+    from astropy.extern import six
+    from astropy.table import QTable
+    
+    if isinstance(connection, six.string_types):
         from sqlalchemy import create_engine
-        connection = create_engine(connection)
-    df = pandas.read_sql(sql, connection)
-    return df
+        engine = create_engine(connection)
+    else:
+        engine = connection
+    connection = engine.connect()
+    result = connection.execute(sql)
+    col_names = result.keys()
+    result_list = result.fetchall()
+    if len(result_list)>0:
+        return QTable(rows=result_list, names=col_names)
+    return QTable()
