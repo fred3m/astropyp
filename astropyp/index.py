@@ -41,6 +41,7 @@ def add_tbl(connection, columns=None, tbl_name='obs', echo=False):
     
     engine = create_engine(connection, echo=echo)
     meta = MetaData()
+    meta.reflect(engine)
     
     # check if the table name already exists
     if tbl_name in meta.tables.keys():
@@ -92,11 +93,12 @@ def valid_ext(filename, extensions):
         return True
     return False
 
-def get_files(path):
+def get_files(path, extensions):
     """
     Get all the files in a directory
     """
-    return [os.path.join(path, f) for f in os.listdir(path) if os.path.isfile(os.path.join(path,f))]
+    return [os.path.join(path, f) for f in os.listdir(path) 
+        if os.path.isfile(os.path.join(path,f)) and valid_ext(f, extensions)]
 
 def add_files(connection, tbl_name, filenames=None, paths=None, recursive=False, 
         no_warnings=True, column_func=None, extensions=['.fits','.fits.fz']):
@@ -177,7 +179,7 @@ def add_files(connection, tbl_name, filenames=None, paths=None, recursive=False,
                     [[os.path.join(root, f) for f in files if valid_ext(f, extensions)] 
                         for root,dirs,files in os.walk(path)])))
             else:
-                filepaths.append(get_files(path))
+                filepaths.append(get_files(path, extensions))
         # Flatten the list of lists
         filepaths = list(itertools.chain.from_iterable(filepaths))
     else:
@@ -187,8 +189,11 @@ def add_files(connection, tbl_name, filenames=None, paths=None, recursive=False,
     if filenames is not None:
         if isinstance(filenames, six.string_types):
             filenames = [filenames]
-        filepaths = filepaths+filenames
+        for filename in filenames:
+            if filename not in filepaths:
+                filepaths.append(filename)
     
+    logger.debug('filepaths: {0}'.format(filepaths))
     duplicates = []
     new_files = []
     # Iterate through paths to look for files to add
