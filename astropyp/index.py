@@ -7,14 +7,52 @@ import warnings
 
 logger = logging.getLogger('astropyp.index')
 
-def add_tbl(connection, columns=None, tbl_name='obs', echo=False):
+def init_connection(connection, echo=False):
+    from astropy.extern import six
+    if isinstance(connection, six.string_types):
+        from sqlalchemy import create_engine
+        engine = create_engine(connection, echo=echo)
+    else:
+        engine = connection
+    return engine
+
+def connect2idx(connection, tbl_name):
+    """
+    Connect to database and get the current metadata, table, and session.
+    
+    Parameters
+    ----------
+    connection: str or `~sqlalchemy.engine.base.Engine`
+        Connection to the index database
+    tbl_name: str
+        Name of the table to load
+    
+    Returns
+    -------
+    tbl: `~sqlalchemy.sql.schema.Table`_
+        Table from database
+    meta: 
+    session: `~sqlalchemy.orm.session.Session`_
+        Session connected to database
+    """
+    from sqlalchemy import MetaData
+    from sqlalchemy.orm import sessionmaker
+    engine = init_connection(connection)
+    meta = MetaData()
+    meta.reflect(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    tbl = meta.tables[tbl_name]
+    return meta, tbl, session
+
+def add_tbl(connection, columns, tbl_name, echo=False):
     """
     Create or clear a set of tables for a decam file index and create the decam_keys
     table to link decam headers to table columns
     
     Parameters
     ----------
-    connection: str or `~sqlalchemy.engine.base.Engine`
+    connection: str or `~sqlalchemy.engine.base.Engine`_
         Connection to the index database
     columns: list of tuples
         Columns to create in the table. This should always be a list of 
@@ -48,27 +86,6 @@ def add_tbl(connection, columns=None, tbl_name='obs', echo=False):
         warnings.warn('Table "{0}" already exists'.format(tbl_name))
         return True
     
-    # Default column names for DECam (remove later)
-    default_columns = [
-        ('id', Integer, {'primary_key':True}),
-        ('EXPNUM', Integer, {'index':True}),
-        ('EXPTIME', Float, {}),
-        ('DATE-OBS', Integer, {}),
-        ('MJD-OBS', Float, {}),
-        ('OBS-LAT', String, {}),
-        ('OBS-LONG', String, {}),
-        ('PROPID', String, {}),
-        ('RA', String, {}),
-        ('DEC', String, {}),
-        ('FILTER', String, {}),
-        ('OBSTYPE', String, {}),
-        ('OBJECT', String, {}),
-        ('DTCALDAT', String, {}),
-        ('filename', String, {'index': True}),
-        ('PROCTYPE', String, {'index': True}),
-        ('PRODTYPE', String, {'index': True}),
-    ]
-    
     # Include default columns if the user keys included a '*' or if the user 
     # didn't specify any header keys
     if columns is None:
@@ -81,6 +98,14 @@ def add_tbl(connection, columns=None, tbl_name='obs', echo=False):
     tbl = Table(tbl_name, meta, *tbl_columns)
     tbl.create(engine, checkfirst=True)
     return False
+
+def clone_tbl(tbl, metadata, new_name):
+    """
+    Clone a table in a database to another table with a new name
+    """
+    from sqlalchemy import Table
+    columns = [c.copy() for c in tbl.columns]
+    return Table(new_name, metadata, *columns)
 
 def valid_ext(filename, extensions):
     """
@@ -259,3 +284,52 @@ def query(sql, connection):
     if len(result_list)>0:
         return QTable(rows=result_list, names=col_names)
     return QTable()
+
+def get_distinct(connection, tbl, column):
+    """
+    Get the unique values in a column
+    
+    Parameters
+    ----------
+    connection: str or `~sqlalchemy.engine.base.Engine`
+        Connection to the index database
+    tbl: str
+        Name of the table containing the column
+    column: str
+        Name of the column to search for distinct values
+    
+    Returns
+    -------
+    distinct: list
+        List of distinct values
+    """
+    meta, obs_tbl, session = connect2idx(connection, tbl)
+    distinct = [f[0] for f in session.query(getattr(obs_tbl.columns, column)).distinct().all()]
+    return distinct
+
+def get_multiplicity(connection, tbl, column):
+    """
+    Get the unique values of a column and the multiplicity of each value
+    
+    Parameters
+    ----------
+    connection: str or `~sqlalchemy.engine.base.Engine`
+        Connection to the index database
+    tbl: str
+        Name of the table containing the column
+    column: str
+        Name of the column to search for distinct values
+    
+    Returns
+    -------
+    multiplicity: dict
+        Keys are the distinct entries in the table and values of the dictionary are their 
+        multiplicities
+    """
+    meta, obs_tbl, session = connect2idx(connection, tbl)
+    distinct = [f[0] for f in session.query(getattr(obs_tbl.columns, column)).distinct().all()]
+    multiplicity = {}
+    for value in distinct:
+        count = session.query(obs_tbl).filter(getattr(obs_tbl.columns, column)==value).count()
+        multiplicity[value] = count
+    return multiplicity

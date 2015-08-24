@@ -10,8 +10,13 @@ def test_add_tbl(tmpdir):
     from sqlalchemy import Integer, Float, String
     
     connection = 'sqlite:///'+str(tmpdir)+'test.db'
+    columns = [
+        ('id', Integer, {'primary_key':True}),
+        ('test1', String, {'index': True}),
+        ('test2', Float, {}),
+    ]
     
-    result = index.add_tbl(connection, tbl_name='obs')
+    result = index.add_tbl(connection, tbl_name='obs', columns=columns)
     assert result == False
     
     # Test table was created
@@ -21,19 +26,9 @@ def test_add_tbl(tmpdir):
     assert 'obs' in meta.tables.keys()
     
     # Test duplicate table
-    result = index.add_tbl(connection, tbl_name='obs')
+    result = index.add_tbl(connection, tbl_name='obs', columns=columns)
     assert result == True
     
-    # Test custom columns
-    columns = [
-        ('id', Integer, {'primary_key':True}),
-        ('test1', String, {'index': True}),
-        ('test2', Float, {}),
-    ]
-    index.add_tbl(connection, tbl_name='other_obs', columns=columns)
-    meta.reflect(engine)
-    assert 'test1' in meta.tables['other_obs'].columns.keys()
-
 def test_add_files_and_query(tmpdir):
     from sqlalchemy import create_engine, MetaData
     from sqlalchemy import Integer, Float, String
@@ -107,3 +102,28 @@ def test_filename_duplicates(tmpdir):
     assert len(tbl)==10
     assert len(new_files)==0
     assert len(duplicates)==10
+
+def test_get_distinct(tmpdir):
+    from sqlalchemy import create_engine, MetaData
+    from sqlalchemy import Integer, Float, String
+    
+    connection = 'sqlite:///'+str(tmpdir)+'test.db'
+    columns = [
+        ('id', Integer, {'primary_key':True}),
+        ('EXPNUM', Integer, {'index': True}),
+        ('FILETYPE', String, {}),
+        ('IMGTYPE', String, {}),
+        ('RA', Float, {}),
+        ('DEC', Float, {}),
+        ('EXPTIME', Float, {}),
+        ('MJD', Float, {}),
+        ('dummy', Integer, {}),
+        ('filename', String, {})
+    ]
+    filenames = data_path('fake_obs0.fits')
+    
+    index.add_tbl(connection, columns, 'obs')
+    new_files, duplicates = index.add_files(connection, 
+        'obs', filenames=filenames, paths=data_path())
+    distinct = index.get_distinct(connection, 'obs', 'EXPNUM')
+    assert distinct==[None,0,1,2]

@@ -13,6 +13,7 @@ def get_package_data():
             os.path.join('data', 'fake_obs6.fits'),
             os.path.join('data', 'fake_obs7.fits'),
             os.path.join('data', 'fake_obs8.fits'),
-            os.path.join('data', 'fake_obs9.fits')
+            os.path.join('data', 'fake_obs9.fits'),
+            os.path.join('data', 'test.db')
         ],
     }
