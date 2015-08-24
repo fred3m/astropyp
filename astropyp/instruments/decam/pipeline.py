@@ -1,13 +1,13 @@
-from astropyp import pipeline
+import datapyp
 import warnings
 import os
 
 class DecamPipeError(Exception):
     pass
 
-class Pipeline(pipeline.core.Pipeline):
+class Pipeline(datapyp.core.Pipeline):
     def __init__(self, **kwargs):
-        from astropyp.utils.misc import get_bool
+        from datapyp.utils import get_bool
         # Make sure that the user included a dictionary of paths to initialize the pipeline
         if 'paths' not in kwargs:
             raise DecamPipeError(
@@ -35,4 +35,4 @@ class Pipeline(pipeline.core.Pipeline):
                     recursive = get_bool(
                         "Search '{0}' recursively for images? ('y'/'n')")
                     index.build(img_path, idx_connect_str, True, recursive, True)
-        pipeline.core.Pipeline.__init__(self, **kwargs)
+        datapyp.core.Pipeline.__init__(self, **kwargs)
