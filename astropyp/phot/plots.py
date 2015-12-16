@@ -39,7 +39,7 @@ def build_rough_coeff_plot(sources, mag_name, ref_name):
     plt.show()
 
 def build_diff_plot(obs, mag_name, ref_name, mag_err_name, ref_err_name, 
-        plot_format='b.', show_stats=True, clipping=1, filename=None):
+        plot_format='b.', show_stats=True, clipping=1, filename=None, title=None):
     """
     Plot the difference between reference magnitudes and observed magnitudes for a 
     given set of observations
@@ -75,6 +75,8 @@ def build_diff_plot(obs, mag_name, ref_name, mag_err_name, ref_err_name,
     plt.errorbar(x, y, yerr=err, fmt=plot_format)
     plt.xlabel(mag_name)
     plt.ylabel('Diff from Std Sources')
+    if title is not None:
+        plt.title(title)
     # show stats
     if show_stats:
         logger.info('mean: {0}'.format(np.mean(y)))

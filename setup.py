@@ -108,8 +108,8 @@ setup(name=PACKAGENAME,
       extras_require={
           'all': [
               'sqlalchemy',
-              'astromatic_wrapper',
-              'pandas',
+              'datapyp',
+              #'pandas',
               'statsmodels'
           ]
       },

@@ -86,8 +86,60 @@ def get_table_from_ldac(filename, frame=1):
     frame: int
         Number of the frame in a regular fits file
     """
-    from astropy.table import Table
+    from astropy.table import QTable
     if frame>0:
         frame = frame*2
-    tbl = Table.read(filename, hdu=frame)
+    tbl = QTable.read(filename, hdu=frame)
     return tbl
+
+def isldac(filename):
+    """
+    Determine if a bintable is a FITS of FITS_LDAC file
+    """
+    from astropy.io import fits
+    hdulist = fits.open(filename, memmap=True)
+    if (hdulist[0].header['EXTEND'] and 'EXTNAME' in hdulist[1].header and 
+            'LDAC' in hdulist[1].header['EXTNAME']):
+        return True
+    return False
+
+def get_fits_table(filename, frame=1):
+    """
+    Get a table from a FITS file or FITS_LDAC file (autocheck the type)
+    """
+    if isldac(filename):
+        tbl = get_table_from_ldac(filename, frame)
+    else:
+        from astropy.table import Table
+        tbl = Table.read(filename, hdu=frame)
+    return tbl
+
+def get_fits_table_count(filename):
+    """
+    Get the number of tables in a FITS or FITS_LDAC files.
+    """
+    from astropy.io import fits
+    hdulist = fits.open(filename, memmap=True)
+    count = len(hdulist)-1
+    if isldac(filename):
+        return int(count/2)
+    else:
+        return count
+
+def get_combined_table(filename, frames=None):
+    """
+    Combine all of the tables in a FITS or FITS_LDAC file into a single table
+    """
+    from astropy.table import vstack
+    if frames is None:
+        frames = range(1, get_fits_table_count(filename)+1)
+    all_frames = None
+    for frame in frames:
+        tbl = get_fits_table(filename, frame)
+        tbl['frame'] = frame
+        if all_frames is None:
+            all_frames = tbl
+        else:
+            all_frames = vstack([all_frames, tbl])
+    return all_frames
+            

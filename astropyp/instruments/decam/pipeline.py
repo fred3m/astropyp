@@ -18,12 +18,12 @@ class Pipeline(datapyp.core.Pipeline):
                 "It is recommended to initialize a Pipeline with "
                 "'log', 'stacks', 'config', 'decam' paths")
         # Check for the decam file index
-        if 'idx_connect_str' not in kwargs:
+        if 'connection' not in kwargs:
             warnings.warn("If you do not set an 'idx_connect_str' parts of the Pipeline may not work")
         else:
-            if kwargs['idx_connect_str'].startswith('sqlite'):
-                if not os.path.isfile(kwargs['idx_connect_str'][10:]):
-                    logger.info('path', kwargs['idx_connect_str'][10:])
+            if kwargs['connection'].startswith('sqlite'):
+                if not os.path.isfile(kwargs['connection'][10:]):
+                    logger.info('path', kwargs['connection'][10:])
                     if 'create_idx' in kwargs:
                         if not create_idx:
                             raise PipelineError("Unable to locate DECam file index")

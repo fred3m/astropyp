@@ -14,7 +14,7 @@ def get_decam_default_columns():
         ('id', Integer, {'primary_key':True}),
         ('EXPNUM', Integer, {'index':True}),
         ('EXPTIME', Float, {}),
-        ('DATE-OBS', Integer, {}),
+        ('DATE-OBS', String, {}),
         ('MJD-OBS', Float, {}),
         ('OBS-LAT', String, {}),
         ('OBS-LONG', String, {}),

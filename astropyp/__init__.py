@@ -12,4 +12,9 @@ from ._astropy_init import *
 
 # For egg_info test builds to pass, put package imports here.
 if not _ASTROPY_SETUP_:
-    pass
+    import astropyp.db_utils
+    import astropyp.calibrate
+    import astropyp.wrappers
+    import astropyp.instruments
+    import astropyp.utils
+    import astropyp.phot

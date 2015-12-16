@@ -45,7 +45,7 @@ def connect2idx(connection, tbl_name):
     tbl = meta.tables[tbl_name]
     return meta, tbl, session
 
-def add_tbl(connection, columns, tbl_name, echo=False):
+def add_tbl(connection, columns, tbl_name, echo=False, overwrite=False):
     """
     Create or clear a set of tables for a decam file index and create the decam_keys
     table to link decam headers to table columns
@@ -83,8 +83,12 @@ def add_tbl(connection, columns, tbl_name, echo=False):
     
     # check if the table name already exists
     if tbl_name in meta.tables.keys():
-        warnings.warn('Table "{0}" already exists'.format(tbl_name))
-        return True
+        if overwrite:
+            meta.tables[tbl_name].drop(engine)
+            meta.reflect(engine)
+        else:
+            warnings.warn('Table "{0}" already exists'.format(tbl_name))
+            return True
     
     # Include default columns if the user keys included a '*' or if the user 
     # didn't specify any header keys
@@ -264,26 +268,69 @@ def query(sql, connection):
         SQL expression to execute on the database
     connection: str or `~sqlalchemy.engine.base.Engine`
         Connection to the index database
+    none2nan: bool (optional)
+        If ``none2nan=True`` None values will be converted into ``np.nan`` values.
     
     Returns
     -------
     result: `~astropy.table.QTable`
     """
-    from astropy.extern import six
-    from astropy.table import QTable
+    from astropy.table import Table
+    from sqlalchemy import MetaData
+    import numpy as np
+    from collections import OrderedDict
     
-    if isinstance(connection, six.string_types):
-        from sqlalchemy import create_engine
-        engine = create_engine(connection)
-    else:
-        engine = connection
+    engine = init_connection(connection)
     connection = engine.connect()
+    meta = MetaData()
+    meta.reflect(engine)
+    
+    # get the table name as long as multiple tables aren't joined together
+    words = sql.split(' ')
+    if 'join' not in words:
+        from_idx = words.index('from')
+        idx = from_idx+1
+        if words[idx]=='':
+            while words[idx]=='':
+                idx+=1
+        tbl_name = words[idx]
+        set_dtype = True
+    else:
+        set_dtype = False
+    
+    # Query the database and check for a null result
     result = connection.execute(sql)
     col_names = result.keys()
     result_list = result.fetchall()
-    if len(result_list)>0:
-        return QTable(rows=result_list, names=col_names)
-    return QTable()
+    if len(result_list)==0:
+        return Table()
+    
+    # temporary check
+    for n in range(len(col_names)):
+        logger.info('column: {0}, type: {1}, python type: {2}'.format(
+            col_names[n],
+            meta.tables[tbl_name].columns[col_names[n]].type,
+            meta.tables[tbl_name].columns[col_names[n]].type.python_type))
+    
+    if set_dtype:
+        result_list = zip(*result_list)
+        data = [(col_names[n], 
+            np.array(result_list[n]).astype(
+                meta.tables[tbl_name].columns[col_names[n]].type.python_type))
+            for n in range(len(col_names))]
+        data = OrderedDict(data)
+        tbl = Table(data, masked=True)
+        for col in tbl.columns.keys():
+            # Strings cannot be checked by isfinite, so we ignore the type error they throw
+            try:
+                tbl[col].mask = ~np.isfinite(tbl[col])
+            except TypeError:
+                pass
+        return tbl
+    
+    result_list = [map(lambda x: x if x is not None else np.nan, row) 
+        for row in result_list]
+    return Table(rows=result_list, names=col_names)
 
 def get_distinct(connection, tbl, column):
     """
