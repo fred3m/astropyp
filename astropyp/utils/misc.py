@@ -52,7 +52,7 @@ class InternalFlags:
         else:
             raise Exception("Flag {0} has not yet been added".format())
         self.set_flag_type()
-    def get_flags(self):
+    def get_flag_info(self):
         if self.flag_type=='bits':
             key = 'Bits'
         else:
@@ -61,7 +61,7 @@ class InternalFlags:
             [self.flags.keys(), [v for k,v in self.flags.items()]], 
             names=(key, 'Description'))
         return result
-    def get_errors(self, flags):
+    def get_flags(self, flags):
         if self.flag_type=='bits':
             binflags = flags.astype(np.uint8)
             binflags = binflags.reshape((binflags.shape[0],1))

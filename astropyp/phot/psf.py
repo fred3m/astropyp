@@ -1,3 +1,4 @@
+from __future__ import division
 import numpy as np
 import logging
 
@@ -45,7 +46,7 @@ def get_subpixel_patch(img_data, obj_pos, obj_shape, offset_buffer=3,
         must be an odd number. *Default=5*
     normalize: bool
         Whether or not to normalize the data so that the maximum
-        value is 1.
+        value is 1. *Default=True*
     
     Returns
     -------
@@ -64,10 +65,10 @@ def get_subpixel_patch(img_data, obj_pos, obj_shape, offset_buffer=3,
         obj_pos)
     X = np.arange(0, data.shape[1]*subpixels, subpixels)
     Y = np.arange(0, data.shape[0]*subpixels, subpixels)
-    data_func = interpolate.RectBivariateSpline(X, Y, data)
+    data_func = interpolate.RectBivariateSpline(Y, X, data)
     X = np.arange(0, data.shape[1]*subpixels, 1)
     Y = np.arange(0, data.shape[0]*subpixels, 1)
-    Z = data_func(X, Y, data)
+    Z = data_func(Y, X, data)
     
     # Get the indices of the maximum value, This may be slightly different from
     # the center so we will likely have to re-align the image
@@ -84,22 +85,22 @@ def get_subpixel_patch(img_data, obj_pos, obj_shape, offset_buffer=3,
             obj_shape[1]*subpixels), peak_idx)
         peak_idx = np.unravel_index(np.argmax(obj_data), obj_data.shape)
     else:
-        logger.warn(
-            'Unable to re-center, maximum is at'
-            ' {0} but offset buffer is {1}'.format(
-            dpeak, offset_buffer))
         obj_data = Z
+        if offset_buffer!=0:
+            logger.warn(
+                'Unable to re-center, maximum is at'
+                ' {0} but offset buffer is {1}'.format(
+                dpeak, offset_buffer))
     
     # Normalize the data so that each source will be on the same scale
     if normalize:
         obj_data = obj_data/np.max(obj_data)
     return obj_data
 
-def select_psf_sources(img_data, sources, aper_radius=None,
-        min_flux=None, min_amplitude=None, min_dist=None, max_ratio=None, 
-        edge_dist=None, verbose=True, ra='ra', dec='dec', a='a', b='b',
-        x='x', y='y', radius='aper_radius', flux='aper_flux', peak='peak',
-        units='deg', badpix_flags=[], max_flag=0):
+def select_psf_sources(img_data, catalog, aper_radius=None,
+        min_flux=None, min_amplitude=None, min_dist=None, 
+        max_ratio=None, edge_dist=None, verbose=True, units='deg', 
+        badpix_flags=[], flag_max=0):
     """
     From an image and a list of sources, generate a list of high SNR
     sources with circular profiles that are likely to be good sources
@@ -109,12 +110,13 @@ def select_psf_sources(img_data, sources, aper_radius=None,
     ----------
     img_data: array-like
         The image data
-    sources: `~astropy.table.Table`
-        A list of sources
-    aper_radius: integer, optional
-        Radius to use to calculate psf flux. If no ``aperture_radius``
-        is given this defaults to the maximum radius in the the
-        list of sources
+    catalog: `~astropyp.catalog.ImageCatalog`
+        Catalog of sources. The properties 
+        x, y, ra, dec, aper_flux, peak, a, b 
+        are all required to be mapped to the appropriate columns in the
+        catalog.sources table. 
+    aper_radius: integer
+        Radius to use to calculate psf flux.
     min_flux: integer, optional
         Minimum flux to be considered an valid source. If no
         ``min_flux`` is given then no cuts will be made based on
@@ -138,102 +140,50 @@ def select_psf_sources(img_data, sources, aper_radius=None,
     verbose: bool, optional
         Whether or not to log the results of the various cuts.
         *Default value is True*
-    ra,dec: string or array-like, optional
-        Arrays of coordinates or names of coordinate columns in ``sources``.
-        *Default is ``ra='ra'``, ``dec='dec'``*
-    x,y: string or array-like, optional
-        Arrays of coordinates or names of coordinate columns in ``sources``.
-        *Default is ``x='x'``, ``y='y'``*
-    a,b: string or array-like, optional
-        Arrays or names of columns in ``sources`` for the axes widths of
-        the psf sources (from SEP extract).
-        *Default ``a='a'``, ``b='b'``*
-    radius: string or array-like, optional
-        Array or name of the aperture radius column in ``sources``.
-        *Default ``radius='aper_radius'``*
-    flux: string or array-like, optional
-        Array of name of the aperture flux column in ``sources``.
-        *Default ``flux='aper_flux'``*
-    peak: string or array-like, optional
-        Array or name of the peak column in ``sources``.
-        *Default ``peak='peak'``*
     units: string or `~astropy.units.unit`
         Units of the ra and dec columns. *Default value is 'deg'*
     badpix_flags: list of strings or list of array-like, optional
         A list of column names in ``sources`` or a list of arrays
         with the badpixel flags for each source.
         *Default is an empty list*
-    max_flag: integer, optional
+    flag_max: integer, optional
         Maximum value of a bad pixel flag to be considered good.
         *Default value is 0*
     
     Returns
     -------
-    psf_sources: `~astropy.table.Table`
-        Table of psf sources
+    psf_idx: `~nump.ndarray`
+        Boolean array that matches psf sources selected by the function
     flags: `~astropy.table.Table`
         Table of flags for all of the sources
     """
-    # If the user passed column names instead of arrays, get the
-    # appropriate columns from ``sources``
-    columns = [x,y,a,b,ra,dec, flux, peak]
-    if isinstance(x, six.string_types):
-        x = sources[x]
-    if isinstance(y, six.string_types):
-        y = sources[y]
-    if isinstance(a, six.string_types):
-        a = sources[a]
-    if isinstance(b, six.string_types):
-        b = sources[b]
-    if isinstance(ra, six.string_types):
-        ra = sources[ra]
-    if isinstance(dec, six.string_types):
-        dec = sources[dec]
-    if isinstance(flux, six.string_types):
-        flux = sources[flux]
-    if isinstance(peak, six.string_types):
-        peak = sources[peak]
-            
-    # Get the total number of sources
-    if hasattr(x, 'shape'):
-        rows = x.shape[0]
-    else:
-        rows = len(x)
-    
-    # If the user didn't specify the aperture radius, 
-    # use the maximum aperture radius
-    # (note, to build the prf properly it is important that all of the sources 
-    # use the same aperture radius)
-    if aper_radius is None:
-        if isinstance(radius, six.string_types):
-            radius = sources[radius]
-        aper_radius = np.max(radius)
+    rows = catalog.shape[0]
     
     # Only select high signal to noise sources
-    min_flux_flag = ~np.isnan(flux)
+    min_flux_flag = ~np.isnan(catalog.aper_flux)
     if min_flux is not None:
-        min_flux_flag = min_flux_flag & (flux>min_flux)
+        min_flux_flag = min_flux_flag & (catalog.aper_flux>min_flux)
     if min_amplitude is not None:
-        min_amp_flag = peak>min_amplitude
+        min_amp_flag = catalog.peak>min_amplitude
     
     # Eliminate Bad Pixel Sources
     bad_src_flag = np.ones((rows,), dtype=bool)
     for flags in badpix_flags:
         if isinstance(flags, six.string_types):
-            flags = sources[flags]<=max_flag
+            flags = catalog[flags]<=flag_max
         bad_src_flag = bad_src_flag & flags
     
     # Cut out elliptical sources (likely galaxies)
-    if a is not None and b is not None:
-        a_b = b/a
+    if catalog.a is not None and catalog.b is not None:
+        a_b = catalog.b/catalog.a
         if max_ratio is None:
             max_ratio = np.median(a_b)-np.std(a_b)*1.5
-        elliptical_flag = b/a> max_ratio
+        elliptical_flag = catalog.b/catalog.a> max_ratio
     
     # Cut out all sources with a nearby neighbor
     if min_dist is None:
         min_dist = 3*aper_radius
-    c0 = SkyCoord(ra, dec, unit=units)
+    c0 = SkyCoord(np.array(catalog.ra), np.array(catalog.dec), unit=units)
     idx, d2, d3 = c0.match_to_catalog_sky(c0, 2)
     px = apu.def_unit('px', apu.arcsec*.27)
     d2 = d2.to(px).value
@@ -242,18 +192,18 @@ def select_psf_sources(img_data, sources, aper_radius=None,
     # Cut out all source near the edge
     if edge_dist is None:
         edge_dist = aper_radius+1
-    edge_flag = ((x>edge_dist) & (y>edge_dist) &
-        (x<img_data.shape[1]-edge_dist) & (y<img_data.shape[0]-edge_dist))
+    edge_flag = ((catalog.x>edge_dist) & (catalog.y>edge_dist) &
+        (catalog.x<img_data.shape[1]-edge_dist) & 
+        (catalog.y<img_data.shape[0]-edge_dist))
     
     # Apply all of the cuts to the table of sources
-    psf_sources = sources[
+    psf_idx = (
         min_flux_flag & 
         min_amp_flag &
         bad_src_flag &
         elliptical_flag &
         distance_flag &
-        edge_flag
-    ]
+        edge_flag)
     
     # Combine the flags into a table that can be used later
     flags = table.Table(
@@ -266,22 +216,22 @@ def select_psf_sources(img_data, sources, aper_radius=None,
     if verbose:
         level = logger.getEffectiveLevel()
         logger.setLevel(logging.INFO)
-        logger.info('Total sources: {0}'.format(len(sources)))
+        logger.info('Total sources: {0}'.format(rows)),
         logger.info('Sources with low flux: {0}'.format(
-            len(sources)-np.sum(min_flux_flag)))
+            rows-np.sum(min_flux_flag)))
         logger.info('Sources with low amplitude: {0}'.format(
-            len(sources)-np.sum(min_amp_flag)))
+            rows-np.sum(min_amp_flag)))
         logger.info('Sources with bad pixels: {0}'.format(
-            len(sources)-np.sum(bad_src_flag)))
+            rows-np.sum(bad_src_flag)))
         logger.info('Elliptical sources: {0}'.format(
-            len(sources)-np.sum(elliptical_flag)))
+            rows-np.sum(elliptical_flag)))
         logger.info('Source with close neighbors: {0}'.format(
-            len(sources)-np.sum(distance_flag)))
+            rows-np.sum(distance_flag)))
         logger.info('Sources near an edge: {0}'.format(
-            len(sources)-np.sum(edge_flag)))
-        logger.info('Sources after cuts: {0}'.format(len(psf_sources)))
+            rows-np.sum(edge_flag)))
+        logger.info('Sources after cuts: {0}'.format(np.sum(psf_idx))),
         logger.setLevel(level)
-    return psf_sources, flags
+    return psf_idx, flags
 
 def build_psf(img_data, aper_radius, sources=None, x='x', y='y', 
         subsampling=5, combine_mode='median', offset_buffer=3):
@@ -395,14 +345,21 @@ class SinglePSF(Fittable2DModel):
         image
     fix_com: bool
         Whether or not to correct for a psf peak that is not at the
-        center of mass
+        center of mass *Default=False*
+    fit_position: bool
+        Whether or not to fit the positions and the amplitude or only the 
+        amplitude. *Default=True, fit positions and amplitude*
+    pos_range: float
+        +- bounds for the position (if ``fit_position=True``).
+        If ``pos_range=0`` then no bounds are used and the 
+        x_0 and y_0 parameters are free. *Default=0*
     """
     amplitude = Parameter('amplitude')
     x_0 = Parameter('x_0')
     y_0 = Parameter('y_0')
 
     def __init__(self, psf_array, amplitude, x_0, y_0, subsampling=5,
-            fix_com=False):
+            fix_com=False, fit_position=True, pos_range=0):
         # Set parameters defined by the psf to None so that they show
         # up as class attributes. self.set_psf_array will set all
         # of these parameters automatically
@@ -412,6 +369,7 @@ class SinglePSF(Fittable2DModel):
         self._subsampling = None
         self._psf_array = None
         
+        self.fix_com = fix_com
         self.fitter = LevMarLSQFitter()
         
         # The position must be adjusted slightly beause
@@ -421,11 +379,18 @@ class SinglePSF(Fittable2DModel):
             self.com = get_com_adjustment(psf_array)
         else:
             self.com = (0,0)
-        # By default only the amplitude is fit
-        # This can be changed in the fit function
-        constraints = {'fixed': {'x_0': True, 'y_0': True}}
         super(SinglePSF, self).__init__(n_models=1, x_0=x_0, y_0=y_0,
-                                          amplitude=amplitude, **constraints)
+                                          amplitude=amplitude)
+        # Choose whether or not the position of the PSF can be moved
+        if fit_position:
+            self.x_0.fixed = False
+            self.y_0.fixed = False
+            if pos_range>0:
+                self.x_0.bounds = (self.x_0-pos_range, self.x_0+pos_range)
+                self.y_0.bounds = (self.y_0-pos_range, self.y_0+pos_range)
+        else:
+            self.x_0.fixed = True
+            self.y_0.fixed = True
         self.set_psf_array(psf_array, subsampling=subsampling)
     @property
     def shape(self):
@@ -434,16 +399,25 @@ class SinglePSF(Fittable2DModel):
         """
         return self._psf_array.shape
     
+    def get_flux(self, amplitude=None):
+        """
+        PSF Flux of the source
+        """
+        if amplitude is None:
+            amplitude = self.amplitude
+        flux = np.sum(self._psf_array*amplitude)/self._subsampling**2
+        return flux
+    
     def evaluate(self, X, Y, amplitude, x_0, y_0):
         """
         Evaluate the SinglePSF model.
         """
-        x = X[0,:]+x_0
-        y = Y[:,0]+y_0
-        result = amplitude * self._psf_func(x,y)
+        x = X[0,:]-x_0
+        y = Y[:,0]-y_0
+        result = amplitude * self._psf_func(y,x)
         return result
     
-    def fit(self, img_data, fit_position=False, pos_range=0):
+    def fit(self, img_data, fit_position=True, pos_range=0, indices=None):
         """
         Fit the PSF to the data.
         
@@ -460,20 +434,21 @@ class SinglePSF(Fittable2DModel):
             a group of sources where the code might try to significantly
             move one of the sources for the fit. The default range
             is 0, which does not set any bounds at all.
+        indices: list of arrays
+            ``indices`` is a list that contains the X and Y indices
+            to the img_data provided. The default is None, which 
+            uses the image scale and size of the psf to set the indices.
         """
-        # Choose whether or not the position of the PSF can be moved
-        if fit_position:
-            self.x_0.fixed = False
-            self.y_0.fixed = False
-            if pos_range>0:
-                self.x_0.bounds = (self.x_0-pos_range, self.x_0+pos_range)
-                self.y_0.bounds = (self.y_0-pos_range, self.y_0+pos_range)
+        if indices is None:
+            X = np.linspace(-self._radius, self._radius, 
+                self._subpixel_width)+self.x_0-self.com[0]
+            Y = np.linspace(-self._radius, self._radius, 
+                self._subpixel_width)+self.y_0-self.com[1]
+            X, Y = np.meshgrid(X, Y)
         else:
-            self.x_0.fixed = True
-            self.y_0.fixed = True
+            X,Y = indices
         
         # Extract sub array with data of interest
-        self.reset_psf_func(self.x_0.value, self.y_0.value)
         position = (self.y_0.value, self.x_0.value)
         sub_array_data = get_subpixel_patch(img_data, position, 
             (self._width, self._width), 0, self._subsampling, False)
@@ -482,11 +457,6 @@ class SinglePSF(Fittable2DModel):
         # values are present
         if (sub_array_data.shape == self.shape and
                 not np.isnan(sub_array_data).any()):
-            X = np.linspace(-self._radius, self._radius, 
-                self._subpixel_width)
-            Y = np.linspace(-self._radius, self._radius, 
-                self._subpixel_width)
-            X, Y = np.meshgrid(X, Y)
             m = self.fitter(self, X, Y, sub_array_data)
             self.amplitude = m.amplitude
             self.x_0 = m.x_0
@@ -495,12 +465,17 @@ class SinglePSF(Fittable2DModel):
         else:
             return 0
     
-    def set_psf_array(self, psf_array, x_0=None, y_0=None, subsampling=None):
+    def set_psf_array(self, psf_array, subsampling=None):
         """
         If a change is made to the psf function, it must
         be updated here so that all of the derived parameters
         (_width, _radius, _psf_array) can be updated
         """
+        try:
+            from scipy import interpolate
+        except ImportError:
+            raise Exception(
+                "You must have scipy installed to use the SinglePSF class")
         if subsampling is not None:
             self._subsampling = subsampling
         
@@ -509,56 +484,39 @@ class SinglePSF(Fittable2DModel):
         self._width = self._subpixel_width/self._subsampling
         self._radius = (self._width-1)/2.
         self._psf_array = psf_array
-        self.reset_psf_func(x_0, y_0)
-    
-    def reset_psf_func(self, x_0=None, y_0=None):
-        """
-        Reset the interpolation function used to represent the
-        psf.
-        """
-        try:
-            from scipy import interpolate
-        except ImportError:
-            raise Exception("Scipy must be installed to use psf fitting")
-        if x_0 is None:
-            x_0 = self.x_0.value+self.com[0]
-        if y_0 is None:
-            y_0 = self.y_0.value+self.com[0]
+        
         # Set the function to determine the psf (up to an amplitude)
         X = np.linspace(-self._radius, self._radius, 
-            self._subpixel_width)+x_0
+            self._subpixel_width)
         Y = np.linspace(-self._radius, self._radius, 
-            self._subpixel_width)+y_0
-        self._psf_func = interpolate.RectBivariateSpline(X, Y, self._psf_array)
+            self._subpixel_width)
+        self._psf_func = interpolate.RectBivariateSpline(Y, X, self._psf_array)
 
 class GroupPSF:
     """
     This represents the PSFs of a group of sources. In general
     a `GroupPSF` should only be created by the `ImagePSF` class.
     """
-    def __init__(self, group_id, psf, positions=None, psf_width=None, 
-            patch_boundaries=None, mask_img=True, 
-            show_plots=True, **kwargs):
+    def __init__(self, group_id, psf, positions=None, amplitudes=None,
+            bounds=None, mask_img=True, show_plots=True, **kwargs):
         if isinstance(psf, GroupPSF):
             self.__dict__ = psf.__dict__.copy()
         else:
             self.group_id = group_id
             self.psf = psf.copy()
-            if psf_width is None and hasattr(self.psf, '_prf_array'):
-                psf_width = self.psf._prf_array[0][0].shape[0]
-            if psf_width % 2==0:
-                raise Exception("psf_width must be an odd number")
             self.positions = positions
-            self.psf_width = psf_width
+            self.amplitudes = amplitudes
             self.mask_img = mask_img
             self.show_plots = show_plots
-            self.patch_boundaries=patch_boundaries
+            self.bounds = bounds
             self.combined_psf = None
-    def get_patch(self, data, positions=None, width=None, 
-            patch_boundaries=None):
+        for k,v in kwargs:
+            setattr(self, k, v)
+    def get_patch(self, data, positions=None, patch_bounds=None,
+            show_plots=None):
         """
         Given a list of positions, get the patch of the data that
-        contains all of the positions and their PRF radii and mask
+        contains all of the positions and their PSF radii and mask
         out all of the other pixels (to prevent sources outside the
         group from polluting the fit).
     
@@ -570,37 +528,42 @@ class GroupPSF:
             List of positions to include in the patch. If no 
             positions are passed the function will use 
             ``GroupPSF.positions``.
-        width: int (optional)
-            Width (in pixels) of the PRF. This should be an odd 
-            number equal to 2*prf_radius+1 and defaults to 
-            ``GroupPSF.psf_width``
-        patch_boundaries: list or array (optional)
+        patch_bounds: list or array (optional)
             Boundaries of the data patch of the form 
             [ymin,ymax,xmin,xmax]
         """
+        from scipy import interpolate
+        
         if positions is None:
             positions = np.array(self.positions)
-        if width is None:
-            width = self.psf_width
-    
+        if show_plots is None:
+            show_plots = self.show_plots
+        
+        radius = int((self.psf._width-1)/2)
+        x = positions[:,0]
+        y = positions[:,1]
+        
         # Extract the patch of data that includes all of the sources
         # and their psf radii
-        if patch_boundaries is None:
-            if self.patch_boundaries is None:
-                x = positions[:,0]
-                y = positions[:,1]
-                radius = int((width-1)/2)
+        if patch_bounds is None:
+            if self.bounds is None:
                 xc = np.round(x).astype('int')
                 yc = np.round(y).astype('int')
-                self.boundaries = [
-                    min(yc)-radius, # ymin
-                    max(yc)+radius+1, #ymax
-                    min(xc)-radius, #xmin
-                    max(xc)+radius+1 #xmax
+                self.bounds = [
+                    max(min(yc)-radius, 0), # ymin
+                    min(max(yc)+radius+1, data.shape[0]), #ymax
+                    max(min(xc)-radius, 0), #xmin
+                    min(max(xc)+radius+1, data.shape[1]) #xmax
                 ]
-            patch_boundaries = self.boundaries
-        ymin,ymax,xmin,xmax = patch_boundaries
-        sub_data = data[ymin:ymax,xmin:xmax]
+            patch_bounds = self.bounds
+        ymin,ymax,xmin,xmax = patch_bounds
+        X_img = np.arange(xmin, xmax+1, 1)
+        Y_img = np.arange(ymin, ymax+1, 1)
+        Z = data[np.ix_(Y_img,X_img)]
+        X = np.arange(xmin, xmax+1, 1/self.psf._subsampling)
+        Y = np.arange(ymin, ymax+1, 1/self.psf._subsampling)
+        data_func = interpolate.RectBivariateSpline(Y_img, X_img, Z)
+        sub_data = data_func(Y, X, Z)
         
         # If the group is large enough, sources not contained 
         # in the group might be located in the same square patch, 
@@ -615,12 +578,14 @@ class GroupPSF:
             for xc,yc in zip(x,y):
                 mask = mask & (
                     (mask_X-xc)**2+(mask_Y-yc)**2>=(radius)**2)
-    
-            sub_data.mask = mask[ymin:ymax,xmin:xmax]
+            # Expand the mask to be the same size as the data patch
+            subsampling = self.psf._subsampling
+            sub_data.mask = np.kron(mask[np.ix_(Y_img,X_img)],
+                np.ones((subsampling, subsampling), dtype=int))
             sub_data = sub_data.filled(0)
-    
+            
         # Optionally plot the mask and data patch
-        if self.show_plots:
+        if show_plots:
             try:
                 import matplotlib
                 import matplotlib.pyplot as plt
@@ -634,17 +599,18 @@ class GroupPSF:
                 plt.imshow(mask[ymin:ymax,xmin:xmax])
     
             # Plot masked patch used for fit
-            X = np.arange(0, sub_data.shape[1], 1)
-            Y = np.arange(0, sub_data.shape[0], 1)
-            X, Y = np.meshgrid(X, Y)
+            #Xplt = np.arange(0, sub_data.shape[1], 1)
+            #Yplt = np.arange(0, sub_data.shape[0], 1)
+            Xplt, Yplt = np.meshgrid(X, Y)
             fig = plt.figure()
             ax = fig.add_subplot(111, projection='3d')
-            ax.plot_wireframe(X, Y, sub_data)
+            ax.plot_wireframe(Xplt, Yplt, sub_data, 
+                rstride=5, cstride=5)
             plt.show()
-        return sub_data, (xmin, xmax), (ymin, ymax)
+        return sub_data, X, Y
     
-    def fit(self, data, positions=None, psfs=None, psf_width=None,
-            patch_boundaries=None, fitter=None):
+    def fit(self, data, positions=None, psfs=None, amplitudes=None,
+            patch_bounds=None, fitter=None):
         """
         Simultaneously fit all of the sources in a PSF group. This 
         functions makes a copy of the PSF for each source and creates 
@@ -661,152 +627,56 @@ class GroupPSF:
         psfs : list of PSFs (optional)
             It is possible to choose a different PSF for each model, 
             in which case ``psfs`` should have the same length as positions
-        psf_width: int (optional)
-            Width of the PRF arrays. If all of the ``prfs`` are
-            `photutils.psf.GaussianPSF` models then this will have to be
-            set, otherwise it will automatically be calculated
-        patch_boundaries: list or array (optional)
+        amplitudes: list of floats, optional
+            Amplitudes (peak values) for the sources. If amplitudes is
+            none then the pixel value at the position is used
+        patch_bounds: list or array (optional)
             Boundaries of the data patch of the form 
             [ymin,ymax,xmin,xmax]
+        fitter: `~astropy.modeling.Fitter`
+            Fitting class to use to fit the data. *Default is self.fitter*
         """
         if positions is None:
             positions = np.array(self.positions)
+            
         x = positions[:,0]
         y = positions[:,1]
         
+        # If not estimated ampltiudes are given for the sources,
+        # use the pixel value at their positions
+        if amplitudes is None:
+            amplitudes = data[y.astype(int),x.astype(int)]
+        
         if len(positions)==1:
             self.psf.x_0, self.psf.y_0 = positions[0]
-            indices = np.indices(data.shape)
-            result = [self.psf.fit(data, indices)]
+            result = [self.psf.fit(data)]
         else:
             if psfs is None:
                 psfs = [self.psf.copy() for p in range(len(positions))]
-            if psf_width is None:
-                if self.psf_width is not None:
-                    psf_width = self.psf_width
-                else:
-                    psf_width = psfs[0]._prf_array[0][0].shape[0]
             if fitter is None:
                 if self.psf is not None:
                     fitter = self.psf.fitter
                 else:
                     fitter = psfs[0].fitter
-            sub_data, x_range, y_range = self.get_patch(
-                data, positions, psf_width, patch_boundaries)
+            sub_data, X, Y = self.get_patch(data, positions, patch_bounds)
+            X,Y = np.meshgrid(X,Y)
     
-            # Created a CompountModel that is a combination of the individual PRF's
+            # Create a CompoundModel that is a combination of the 
+            # individual PRF's
             combined_psf = None
-            for x0, y0, single_psf in zip(x,y,psfs):
+            for x0, y0, single_psf, amplitude in zip(x,y,psfs,amplitudes):
                 single_psf.x_0 = x0
                 single_psf.y_0 = y0
+                single_psf.amplitude = amplitude
                 if combined_psf is None:
                     combined_psf = single_psf
                 else:
                     combined_psf += single_psf
             # Fit the combined PRF
-            indices = np.indices(data.shape)
-            x_fit, y_fit = np.meshgrid(
-                np.arange(x_range[0],x_range[1], 1),
-                np.arange(y_range[0],y_range[1], 1))
-            self.combined_psf = fitter(combined_psf, x_fit, y_fit, sub_data)
+            self.combined_psf = fitter(combined_psf, X, Y, sub_data)
     
             # Return the list of fluxes for all of the sources in the group 
             # and the combined PRF
             result = [getattr(self.combined_psf,'amplitude_'+str(n)).value 
                 for n in range(len(x))]
         return result
-
-class ImagePSF:
-    """
-    Collection of Groups and PSFs for an entire image
-    """
-    def __init__(self, positions=None, psf=None, separation=None,
-            cluster_method='dbscan', psf_width=None, mask_img=True,
-            show_plots=False, groups=[]):
-        self.positions = positions
-        self.psf = psf
-        self.separation = separation
-        self.cluster_method = cluster_method
-        self.psf_width = psf_width
-        self.mask_img = mask_img
-        self.show_plots = show_plots
-        self.groups = groups
-        self.group_indices = range(len(self.groups))
-    
-    def create_groups(self, positions=None, separation=None, 
-            cluster_method='dbscan'):
-        """
-        Group sources with overlapping PSF's
-        """
-        if separation is None:
-            if hasattr(self.psf, '_prf_array'):
-                separation = self.psf._prf_array[0][0].shape[0]
-            elif hasattr(self.psf, '_psf_array'):
-                separation = (self.psf.psf_width-1/2.)
-        if positions is None:
-            positions = self.positions
-        
-        if cluster_method=='dbscan':
-            # If user has sklearn installed, use DBSCAN to cluster the objects
-            # in groups with overlapping PSF's
-            try:
-                from sklearn.cluster import DBSCAN
-                from sklearn import metrics
-                from sklearn.datasets.samples_generator import make_blobs
-                from sklearn.preprocessing import StandardScaler
-            except ImportError:
-                Exception("You must install sklearn to use 'dbscan' clustering")
-            
-            
-            pos_array = np.array(positions)
-            # Compute DBSCAN
-            db = DBSCAN(eps=separation, min_samples=1).fit(pos_array)
-            self.db = db
-            self.groups = []
-            self.group_indices = np.unique(db.labels_)
-            self.src_indices = db.labels_
-            
-        for group in self.group_indices:
-            # Create PSF object for the entire group
-            group_psf = GroupPSF(
-                group, self.psf, pos_array[group==self.src_indices], 
-                self.psf_width, mask_img=self.mask_img, 
-                show_plots=self.show_plots)
-            self.groups.append(group_psf)
-        if self.show_plots:
-            try:
-                import matplotlib
-                import matplotlib.pyplot as plt
-            except ImportError:
-                raise Exception(
-                    "You must have matplotlib installed to create plots")
-            fig, ax = plt.subplots()
-            x = pos_array[:,0]
-            y = pos_array[:,1]
-            for group in self.group_indices:
-                ax.plot(
-                    x[self.src_indices==group], 
-                    y[self.src_indices==group], 'o')
-            plt.show()
-        return self.groups
-    
-    def get_psf_photometry(self, data, positions=None, psfs=None,
-            separation=None, group_sources=True):
-        if positions is None:
-            if self.positions is None:
-                raise Exception("You must supply a list of positions")
-            positions = self.positions
-                
-        if group_sources:
-            self.create_groups(positions)
-        self.psf_flux = np.zeros(len(positions))
-        pos_array = np.array(positions)
-        for group in self.groups:
-            fit_parameters = {
-                'positions': pos_array[self.src_indices==group.group_id]
-            }
-            if psfs is not None:
-                fit_parameters['psfs'] = psfs[self.src_indices==group.group_id]
-            group_flux = group.fit(data,**fit_parameters)
-            self.psf_flux[self.src_indices==group.group_id] = np.array(group_flux)
-        return self.psf_flux

@@ -17,4 +17,5 @@ if not _ASTROPY_SETUP_:
     import astropyp.wrappers
     import astropyp.instruments
     import astropyp.utils
+    import astropyp.catalog
     import astropyp.phot

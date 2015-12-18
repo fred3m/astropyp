@@ -1,6 +1,9 @@
 import numpy as np
+import logging
 from astropy import table
 from astropy.nddata.utils import extract_array
+
+logger = logging.getLogger('astropyp.phot.detect')
 
 def get_img_flags(dqmask, x, y, shape, edge_val=1):
     """
@@ -113,11 +116,14 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
     
     # Set WCS or X, Y if necessary
     if 'ra' not in objects.columns.keys() and wcs is not None:
-        objects['ra'], objects['dec'] = wcs.all_pix2world(objects['x'], objects['y'], 0)
+        objects['ra'], objects['dec'] = wcs.all_pix2world(
+            objects['x'], objects['y'], 0)
     if 'x' not in objects.columns.keys():
         if wcs is None:
-            raise Exception("You must provide a wcs transformation if specifying ra and dec")
-        objects['x'], objects['y'] = wcs.all_world2pix(objects['ra'], objects['dec'], 0)
+            raise Exception("You must provide a wcs transformation if "
+                "specifying ra and dec")
+        objects['x'], objects['y'] = wcs.all_world2pix(
+            objects['ra'], objects['dec'], 0)
     
     if windowed:
         # Calculate the kron radius
