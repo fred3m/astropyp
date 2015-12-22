@@ -16,7 +16,7 @@ def init_connection(connection, echo=False):
         engine = connection
     return engine
 
-def connect2idx(connection, tbl_name):
+def get_tables(connection):
     """
     Connect to database and get the current metadata, table, and session.
     
@@ -26,6 +26,28 @@ def connect2idx(connection, tbl_name):
         Connection to the index database
     tbl_name: str
         Name of the table to load
+    
+    Returns
+    -------
+    tbl_names: `~sqlalchemy.sql.schema.Table`_
+        Names of tables from database
+    tables: sqlAlchemy tables
+        Tables from database
+    """
+    from sqlalchemy import MetaData
+    engine = init_connection(connection)
+    meta = MetaData()
+    meta.reflect(engine)
+    return meta.tables.keys(), meta.tables
+
+def connect2idx(connection, tbl_name):
+    """
+    Get the names of tables from an SQLAlchemy connection
+    
+    Parameters
+    ----------
+    connection: str or `~sqlalchemy.engine.base.Engine`
+        Connection to the database
     
     Returns
     -------
@@ -42,7 +64,10 @@ def connect2idx(connection, tbl_name):
     meta.reflect(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
-    tbl = meta.tables[tbl_name]
+    if tbl_name in meta.tables:
+        tbl = meta.tables[tbl_name]
+    else:
+        tbl = None
     return meta, tbl, session
 
 def add_tbl(connection, columns, tbl_name, echo=False, overwrite=False):

@@ -22,11 +22,11 @@ class SingleImage:
     
     Parameters
     ----------
-    catalog: `~astropyp.catalog.ImageCatalog` or `~astropy.table.Table`
+    catalog: `~astropyp.catalog.Catalog` or `~astropy.table.Table`
         Catalog of sources with mappings to standard catalog fields.
-        See `~astropyp.catalog.ImageCatalog` for more on ImageCatalogs.
+        See `~astropyp.catalog.Catalog` for more on Catalogs.
         If an `~astropy.table.Table` is passed instead it will be
-        converted to an ImageCatalog with the standard mapping
+        converted to an Catalog with the standard mapping
         to x,y,ra,dec,etc.
     """
     def __init__(self, header=None, img=None, dqmask=None, wtmap=None,
@@ -56,8 +56,8 @@ class SingleImage:
         self.groups = groups
         self.indices = indices
         
-        if not isinstance(self.catalog, astropyp.catalog.ImageCatalog):
-            self.catalog = astropyp.catalog.ImageCatalog(self.catalog)
+        if not isinstance(self.catalog, astropyp.catalog.Catalog):
+            self.catalog = astropyp.catalog.Catalog(self.catalog)
         # If the image is part of an focal array from a larger exposure,
         # use the exposure settings to set parameters
         if self.exptime is None and self.exposure is not None:
@@ -90,7 +90,7 @@ class SingleImage:
             exptime, sex_params, None, subtract_bkg, gain, 
             wcs, aper_radius, windowed, edge_val)
         sources, self.bkg = result
-        self.catalog = astropyp.catalog.ImageCatalog(
+        self.catalog = astropyp.catalog.Catalog(
             sources, a='a', b='b', peak='peak')
         
         if hasattr(self.exposure, 'airmass'):
@@ -321,150 +321,62 @@ class SingleImage:
         np.seterr(**np_err)
         return psf_flux
 
-def old_clean_sources(obs, mag_name, ref_name, check_columns=[], clipping=1):
+class Exposure:
     """
-    Remove NaN values and clip sources outside a given number of standard 
-    deviations
+    Container for a focal array of SingleImages, for example a camera image
+    with multiple CCD images.
     
     Parameters
     ----------
-    obs: structured array-like
-        astropy.table.QTable, pandas.DataFrame, or structured array of 
-        observations
-    mag_name: str
-        Name of the magnitude field
-    ref_name: str
-        Name of the reference catalog magnitude field
-    check_columns: list of strings (optional)
-        Names of columns to check for NaN values
-    clipping: float (optional)
-        Maximum number of standard deviations from the mean that a good 
-        source will be found.
-        If clipping=0 then no standard deviation cut is made
-    
-    Returns
-    -------
-    good_sources: structure array-like
-        Good sources from the original ``obs``.
+    exp_info: dict
+        Dictionary of parameters for the exposure. At a minimum this should
+        include the exposure time and airmass of the exposure
     """
-    import numpy as np
-    
-    # Remove NaN values for selected columns
-    if len(check_columns)>0:
-        conditions = [np.isfinite(obs[col]) for col in check_columns]
-        condition = conditions[0]
-        for cond in conditions[1:]:
-            condition = condition & cond
-        good_sources = obs[condition]
-    else:
-        good_sources = obs
-    
-    # Remove sources that have been flagged by SExtractor as bad
-    good_sources = good_sources[(good_sources['FLAGS']==0) &
-                                (good_sources['FLAGS_WEIGHT']==0)]
-    
-    # Remove the 5 brightest stars (might be saturated) and use range of 5 mags
-    obs_min = np.sort(good_sources[mag_name])[5]
-    obs_max = obs_min+5
-    good_sources = (good_sources[(good_sources[mag_name]>obs_min) & 
-        (good_sources[mag_name]<obs_max)])
-    
-    # Remove outliers
-    diff = good_sources[mag_name]-good_sources[ref_name]
-    good_sources = good_sources[np.sqrt((diff-np.mean(diff))**2)<np.std(diff)]
-    
-    return good_sources
+    def __init__(self, exp_info, 
+            img_filename=None, dqmask_filename=None, wtmap_filename=None,
+            img=None, dqmask=None, wtmap=None, wcs=None, 
+            detect_sources=True, frames=None, memmap=True,
+            aper_radius=None, subsampling=5, psf=None, sex_params={}, 
+            gain=None):
+        # Set exposure info as attributes of the class
+        for k,v in exp_info.items():
+            setattr(self, k, v)
+        # Load the image data (if necessary)
+        if img is None:
+            img = fits.open(img_filename, memmap=memmap)
+        if dqmask is None and dqmask_filename is not None:
+            dqmask = fits.open(dqmask_filename, memmap=memmap)
+        if wtmap is None and wtmap_filename is not None:
+            wtmap = fits.open(wtmap_filename, memmap=memmap)
+        self.img = img
+        self.dqmask = dqmask
+        self.wtmap = wtmap
+        self.aper_radius = aper_radius
+        self.sex_params = sex_params
+        self.ccd_dict = OrderedDict()
+        self.gain = gain
+        
+        # If the user didn't specify which frames to include, use all of them
+        if frames is None:
+            frames = range(1,len(img))
+        
+        # Add the CCD's to the exposure
+        for frame in frames:
+            img_data = img[frame].data.byteswap(True).newbyteorder()
+            if dqmask is not None:
+                dqmask_data = dqmask[frame].data.byteswap(True).newbyteorder()
+            else:
+                dqmask_data = None
+            if wtmap is not None:
+                wtmap_data = wtmap[frame].data.byteswap(True).newbyteorder()
 
-def clean_sources(obs, mag_names, ref_name, check_columns=[], err_columns=[], 
-        clipping=None, brightness_limit=True):
-    """
-    Remove NaN values from a list of check_columns and clip based on the values 
-    of certain error columns
-    
-    Parameters
-    ----------
-    obs: structured array-like
-        astropy.table.Table, pandas.DataFrame, or structured array of 
-        observations
-    mag_names: str or list
-        Name of the magnitude field
-    check_columns: list of strings (optional)
-        Names of columns to check for NaN values
-    err_columns: list (optional)
-        List of columns to check for errors
-    clipping: float or list of floats (optional)
-        Maximum error in err_columns to include in clean sources. If a list is
-        given then each error column is checked against its corresponding entry
-        in the clipping list.
-    
-    Returns
-    -------
-    good_sources: structure array-like
-        Good sources from the original ``obs``.
-    """
-    import numpy as np
-    from astropy.extern import six
-    
-    # Check if mag_names is a list or string
-    if isinstance(mag_names, six.string_types):
-        mag_names = [mag_names]
-    # Remove NaN values for selected columns
-    if len(check_columns)>0:
-        conditions = [np.isfinite(obs[col]) for col in check_columns]
-        condition = conditions[0]
-        for cond in conditions[1:]:
-            condition = condition & cond
-        good_sources = obs[condition]
-    else:
-        good_sources = obs
-    
-    def temp_check(sources, checkpoint):
-        ass = sources[(sources['NUMBER']==666)&(sources['ccd']==59)]
-        if len(ass)>0:
-            logger.info('made it past {0}'.format(checkpoint))
-    temp_check(good_sources, "check_columns")
-    # Mask NaN and infinite values
-    if not good_sources.masked:
-        from astropy.table import Table
-        good_sources = Table(good_sources, masked=True)
-    for col in good_sources.columns.keys():
-        # Strings cannot be checked by isfinite, so we ignore the type error they throw
-        try:
-            good_sources[col].mask = ~np.isfinite(good_sources[col])
-        except TypeError:
-            pass
-    temp_check(good_sources, "mask")
-    # Remove the 5 brightest stars (might be saturated) and use range of 5 mags
-    if brightness_limit:
-        for mag_name in mag_names:
-            obs_min = np.sort(good_sources[mag_name])[5]
-            obs_max = obs_min+5
-            good_sources = (good_sources[(good_sources[mag_name]>obs_min) & 
-                (good_sources[mag_name]<obs_max)])
-    temp_check(good_sources, "brightness")
-    # Based on error columns
-    if len(err_columns)>0:
-        if clipping is None:
-            raise Exception(
-                "You did not specify a value or list of values"
-                " to use for clipping")
-        if isinstance(clipping, float) or isinstance(clipping, int):
-            clipping = [clipping for n in range(len(err_columns))]
-        for n,col in enumerate(err_columns):
-            good_sources = good_sources[good_sources[col]<clipping[n]]
-    temp_check(good_sources, "error_columns")
-    # Some sources have bad PSF fits so we check the the PSF 
-    # magnitudes and Aperture Magnitudes are nearly the same
-    good_sources = good_sources[
-        np.abs(good_sources['MAG_AUTO']-good_sources['MAG_PSF'])<.02]
-    # Remove sources that have been flagged by SExtractor as bad
-    #if 'FLAGS' in good_sources.columns:
-    #    good_sources = good_sources[good_sources['FLAGS']==0]
-    #if 'FLAGS_WEIGHT' in good_sources.columns:
-    #    good_sources = good_sources[good_sources['FLAGS_WEIGHT']==0]
-    temp_check(good_sources, "all")
-
-    return good_sources
+            self.ccd_dict[frame] = DecamCCD(self, img[frame].header, img_data,
+                dqmask_data, wtmap_data, aper_radius, subsampling, wcs)
+        
+        if detect_sources:
+            for frame in frames:
+                self.ccd_dict[frame].detect_sources(self.sex_params, 
+                    gain=self.gain, aper_radius=self.aper_radius)
 
 def match_catalogs(cat1, cat2, ra1='XWIN_WORLD', dec1='YWIN_WORLD', 
         ra2='XWIN_WORLD', dec2='YWIN_WORLD', max_separation=1*apu.arcsec):

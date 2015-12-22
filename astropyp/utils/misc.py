@@ -74,3 +74,8 @@ class InternalFlags:
             for n,f in enumerate(self.flags):
                 tbl[str(f)] = flags==f
         return tbl
+
+def update_ma_idx(arr, idx):
+    new_array = np.ma.array(arr)[idx]
+    new_array.mask = new_array.mask | idx.mask
+    return new_array

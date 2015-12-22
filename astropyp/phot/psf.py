@@ -1,6 +1,7 @@
 from __future__ import division
 import numpy as np
 import logging
+from collections import OrderedDict
 
 from astropy.extern import six
 from astropy.nddata.utils import extract_array, subpixel_indices
@@ -12,6 +13,17 @@ from astropy.modeling.parameters import Parameter
 from astropy.modeling.fitting import LevMarLSQFitter
 
 logger = logging.getLogger('astropyp.phot.psf')
+
+psf_flags = OrderedDict([
+    (128, 'Bad Pixel'), # Bad pixels
+    (64, 'Edge'), # Edge is closer than aperture radius
+    (32, '<not used>'),
+    (16, '<not used>'),
+    (8, 'Low Peak'), # Amplitude is below minimum
+    (4, 'Low Flux'), # Flux is below minimum
+    (2, 'Elliptical'), # Source is elliptical, not circular
+    (1, 'Crowded') # nearby source, requires group photometry
+])
 
 def get_subpixel_patch(img_data, obj_pos, obj_shape, offset_buffer=3, 
         subpixels=5, normalize=True):
@@ -204,6 +216,14 @@ def select_psf_sources(img_data, catalog, aper_radius=None,
         elliptical_flag &
         distance_flag &
         edge_flag)
+    
+    flags = (
+        ~bad_src_flag*128+
+        ~edge_flag*64+
+        ~min_flux_flag*4+
+        ~elliptical_flag*2+
+        ~distance_flag)
+    catalog.sources['pipeline_flags'] = flags
     
     # Combine the flags into a table that can be used later
     flags = table.Table(
