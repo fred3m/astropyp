@@ -11,8 +11,10 @@ from astropy import table
 from astropy.modeling import Fittable2DModel
 from astropy.modeling.parameters import Parameter
 from astropy.modeling.fitting import LevMarLSQFitter
+import warnings
 
 logger = logging.getLogger('astropyp.phot.psf')
+
 
 psf_flags = OrderedDict([
     (128, 'Bad Pixel'), # Bad pixels
@@ -65,6 +67,9 @@ def get_subpixel_patch(img_data, obj_pos, obj_shape, offset_buffer=3,
     obj_data: `numpy.ndarray`
         The subdivided patch of the image centered on the maximum value.
     """
+    warnings.warn("This function is depreciated and will be removed "
+        "in the future"
+    )
     try:
         from scipy import interpolate
     except ImportError:
@@ -169,6 +174,8 @@ def select_psf_sources(img_data, catalog, aper_radius=None,
     flags: `~astropy.table.Table`
         Table of flags for all of the sources
     """
+    from scipy import spatial
+    
     rows = catalog.shape[0]
     
     # Only select high signal to noise sources
@@ -195,11 +202,11 @@ def select_psf_sources(img_data, catalog, aper_radius=None,
     # Cut out all sources with a nearby neighbor
     if min_dist is None:
         min_dist = 3*aper_radius
-    c0 = SkyCoord(np.array(catalog.ra), np.array(catalog.dec), unit=units)
-    idx, d2, d3 = c0.match_to_catalog_sky(c0, 2)
-    px = apu.def_unit('px', apu.arcsec*.27)
-    d2 = d2.to(px).value
-    distance_flag = d2>min_dist
+    KDTree = spatial.cKDTree
+    pts = zip(catalog.x,catalog.y)
+    kdt = KDTree(pts)
+    d2, idx = kdt.query(pts,2)
+    distance_flag = d2[:,1]>min_dist
     
     # Cut out all source near the edge
     if edge_dist is None:
@@ -287,6 +294,8 @@ def build_psf(img_data, aper_radius, sources=None, x='x', y='y',
         This allows the code some leeway to re-center an image
         based on its subpixels. *Default is 3*
     """
+    from astropyp import utils
+    
     if isinstance(x, six.string_types):
         x = sources[x]
     if isinstance(y, six.string_types):
@@ -307,13 +316,19 @@ def build_psf(img_data, aper_radius, sources=None, x='x', y='y',
     # Load a patch centered on each PSF source and stack them to build the
     # final PSF
     src_width = 2*aper_radius+1
-    all_subpixels = []
+    patches = []
     obj_shape = (src_width, src_width)
     for n in range(rows):
-        subpixels = get_subpixel_patch(img_data, (y[n],x[n]), obj_shape, 
-            offset_buffer=offset_buffer, subpixels=subsampling)
-        all_subpixels.append(subpixels)
-    psf = combine(np.dstack(all_subpixels), axis=2)
+        patch, X,Y, new_yx = utils.misc.get_subpixel_patch(
+            img_data, (y[n],x[n]), obj_shape, 
+            max_offset=offset_buffer, subsampling=subsampling,
+            normalize=True)
+        if patch is not None:
+            patches.append(patch)
+        else:
+            logger.info("{0} contains NaN values, skipping".format(
+                (new_yx[1],new_yx[0])))
+    psf = combine(np.dstack(patches), axis=2)
     
     # Add a mask to hide values outside the aperture radius
     radius = aper_radius*subsampling

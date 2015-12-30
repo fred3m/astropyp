@@ -19,3 +19,4 @@ if not _ASTROPY_SETUP_:
     import astropyp.utils
     import astropyp.catalog
     import astropyp.phot
+    import astropyp.astrometry

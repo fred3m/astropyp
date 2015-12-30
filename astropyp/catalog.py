@@ -158,7 +158,7 @@ def combine_coordinates(all_ra, all_dec, method='mean'):
         dec = np.ma.mean(all_dec, axis=0)
     elif method=='median':
         ra = np.ma.median(all_ra, axis=0)
-        dec = np.ma.median(all_dec, zxis=0)
+        dec = np.ma.median(all_dec, axis=0)
     elif method=='in order':
         ra = np.ma.array(all_ra[0])
         dec = np.ma.array(all_dec[0])

@@ -67,7 +67,7 @@ class SingleImage:
     
     def detect_sources(self, sex_params={}, aper_radius=None, 
             subtract_bkg=False, gain=None, wcs=None, exptime=None,
-            windowed=True, edge_val=1):
+            windowed=True, edge_val=1, transform='wcs'):
         # Set optional parameters
         if aper_radius is None:
             aper_radius = self.aper_radius
@@ -88,7 +88,7 @@ class SingleImage:
         
         result = detect.get_sources(self.img, self.dqmask, self.wtmap, 
             exptime, sex_params, None, subtract_bkg, gain, 
-            wcs, aper_radius, windowed, edge_val)
+            wcs, aper_radius, windowed, edge_val, transform)
         sources, self.bkg = result
         self.catalog = astropyp.catalog.Catalog(
             sources, a='a', b='b', peak='peak')

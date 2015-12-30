@@ -41,7 +41,8 @@ def get_img_flags(dqmask, x, y, shape, edge_val=1):
 
 def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None, 
         sex_params={}, objects=None, subtract_bkg=False, gain=None, 
-        wcs=None, aper_radius=None, windowed=True, edge_val=1):
+        wcs=None, aper_radius=None, windowed=True, edge_val=1, origin=0,
+        transform='wcs'):
     """
     Load sources from an image and if a data quality mask is provided, included
     a bitmap of flags in the output catalog. This using SEP to detect
@@ -87,6 +88,9 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
         precise position. *Default=True*
     edge_val: integer
         Value to use for pixels outside the edge of the image
+    transform: string, optional
+        Type of transform to use. Either 'wcs','sip', or 'all'. 
+        *Default=wcs*
     """
     import sep
     
@@ -96,6 +100,7 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
     bkg = sep.Background(img_data, dqmask_data)
     if subtract_bkg:
         bkg.subfrom(img_data)
+        bkg = sep.Background(img_data, dqmask_data)
     
     # Find the objects
     if objects is None:
@@ -115,8 +120,15 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
         #objects = objects[objects['a']<objects['b']*5]
     
     # Set WCS or X, Y if necessary
+    if wcs is not None:
+        if transform=='wcs':
+            transform_method = wcs.wcs_pix2world
+        elif transform=='all':
+            transform_method = wcs.all_pix2world
+        elif transform=='sip':
+            transform_method = wcs.sip_pix2foc
     if 'ra' not in objects.columns.keys() and wcs is not None:
-        objects['ra'], objects['dec'] = wcs.all_pix2world(
+        objects['ra'], objects['dec'] = transform_method(
             objects['x'], objects['y'], 0)
     if 'x' not in objects.columns.keys():
         if wcs is None:
@@ -139,6 +151,15 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
         objects['kron_flux'] = np.nan
         objects['kron_flux_err'] = np.nan
         objects['kron_flag'] = flags
+        
+        use_circle = (use_circle | 
+            (objects['x']<sex_params['kron_k']*objects['kron_radius']*1.5) | 
+            (objects['y']<sex_params['kron_k']*objects['kron_radius']*1.5) | 
+            (objects['x']>img_data.shape[1]-
+                sex_params['kron_k']*objects['kron_radius']*1.5) | 
+            (objects['y']>img_data.shape[0]-
+                sex_params['kron_k']*objects['kron_radius']*1.5))
+        
         kron_flux, kron_err, flags = sep.sum_ellipse(
             img_data, objects['x'][~use_circle], objects['y'][~use_circle], 
             objects['a'][~use_circle], objects['b'][~use_circle], 
@@ -151,7 +172,8 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
             objects['kron_flag'][~use_circle] | flags)
         
         objects['kron_eff_radius'] = eff_radius
-        # If the kron radius is too small, use the minimum circular aperture radius
+        # If the kron radius is too small, use the minimum circular aperture 
+        # radius
         flux, flux_err, flags = sep.sum_circle(
             img_data, objects['x'][use_circle], objects['y'][use_circle], 
             sex_params['kron_min_radius'], 
@@ -172,7 +194,7 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
     
         # Set windowed WCS if possible
         if wcs is not None:
-            objects['ra_win'], objects['dec_win'] = wcs.all_pix2world(
+            objects['ra_win'], objects['dec_win'] = transform_method(
                 objects['xwin'], objects['ywin'], 0)
         if exptime is not None:
             # Calculate kron magnitudes
@@ -207,6 +229,38 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
                 objects['x'], objects['y'],
                 (2*aper_radius+1, 2*aper_radius+1),
                 edge_val)
+        # Calculate the positional error
+        # See SExtractor Documentation for more on
+        # ERRX2 and ERRY2
+        # Ignore for now since this is very computationally
+        # expensive with little to gain
+        if False:
+            back_data = bkg.back()
+            err_x = np.zeros((len(objects,)), dtype=float)
+            err_y = np.zeros((len(objects,)), dtype=float)
+            err_xy = np.zeros((len(objects,)), dtype=float)
+            for n, src in enumerate(objects):
+                X = np.linspace(src['x']-aper_radius, src['x']+aper_radius, 
+                    2*aper_radius+1)
+                Y = np.linspace(src['y']-aper_radius, src['y']+aper_radius, 
+                    2*aper_radius+1)
+                X,Y = np.meshgrid(X,Y)
+                flux = extract_array(img_data, 
+                    (2*aper_radius+1, 2*aper_radius+1), (src['y'], src['x']))
+                back = extract_array(back_data,
+                    (2*aper_radius+1, 2*aper_radius+1), (src['y'], src['x']))
+                if gain is not None and gain > 0:
+                    sigma2 = back**2 + flux/gain
+                else:
+                    sigma2 = back**2
+                flux2 = np.sum(flux)**2
+                err_x[n] = np.sum(sigma2*(X-src['x'])**2)/flux2
+                err_y[n] = np.sum(sigma2*(Y-src['y'])**2)/flux2
+                err_xy[n] = np.sum(sigma2*(X-src['x'])*(Y-src['y']))/flux2
+            objects['ERRX2'] = err_x
+            objects['ERRY2'] = err_y
+            objects['ERRXY'] = err_xy
+        
     # include an index for each source that might be useful later on in
     # post processing
     objects['src_idx'] = [n for n in range(len(objects))]
