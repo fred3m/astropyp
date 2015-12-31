@@ -332,3 +332,46 @@ def save_catalog(tbl, connection, tbl_name, frame, if_exists='append'):
     tbl['frame'] = frame#np.ones((len(tbl),),dtype=int)*frame
     df = tbl.to_pandas()
     df.to_sql(tbl_name, engine, if_exists=if_exists)
+
+def find_neighbors(radius, positions=None, kd_tree=None):
+    """
+    Find all neighbors within radius of each source in a list of
+    positions or a KD-Tree.
+    
+    Parameters
+    ----------
+    radius: float
+        Maximum distance for a neighbor (center to center) to
+        be included
+    positions: array or list of tuples, optional
+        Array or list of coord1,coord2 positions to use for
+        neighbor search. If ``positions`` is not specified,
+        kd_tree must be given.
+    kd_tree: `~scipy.spatial.cKDTree`
+        KD Tree to use for the search. If this isn't specified
+        then a list of positions must be specified
+    
+    Result
+    ------
+    idx: np.array
+        List of indices of all sources with a neighbor. Sources with
+        multiple neighbors will have multiple entries, one for each neighbor
+        given in ``nidx``.
+    nidx: np.array
+        List of indices for neighbors matching each index in ``idx``.
+    """
+    from scipy import spatial
+    if kd_tree is None:
+        if positions is not None:
+            KDTree = spatial.cKDTree
+            kd_tree = KDTree(positions)
+        else:
+            raise Exception("You must either specify a list "
+                "of positions or a kd_tree")
+    pairs = kd_tree.query_pairs(radius)
+    neighbors = np.array(list(pairs))
+    neighbors = np.vstack([neighbors,np.fliplr(neighbors)])
+    idx = neighbors[:,0]
+    nidx = neighbors[:,1]
+    sort_idx = np.argsort(idx)
+    return idx[sort_idx], nidx[sort_idx]

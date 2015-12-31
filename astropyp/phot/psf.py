@@ -27,92 +27,6 @@ psf_flags = OrderedDict([
     (1, 'Crowded') # nearby source, requires group photometry
 ])
 
-def get_subpixel_patch(img_data, obj_pos, obj_shape, offset_buffer=3, 
-        subpixels=5, normalize=True):
-    """
-    Interpolate an image by subdividing each pixel into ``subpixels``
-    pixels. It also (optionally) centers the patch on the pixel with 
-    the maximum flux.
-    
-    Parameters
-    ----------
-    img_data: array-like
-        The image data to use for extraction
-    obj_pos: tuple
-        Position (y,x) of the center of the patch
-    obj_shape: tuple
-        Shape (y size, x size) of the patch in the *original* image.
-        Each of these must be an odd number
-    offset_bufffer: integer
-        Size of the border (in pixels from the original image) to extract
-        from the patch of the original image. This allows the function
-        to re-center the patch on the new maximum, which may be slightly
-        different. If ``offset_buffer=0`` or the change in position is
-        greater than the ``offset_buffer``, then re-centering is cancelled.
-        This is necessary because in crowded fields multiple objects
-        may be overlapping and this prevents fainter sources from being
-        re-centered on their brighter neighbors. For this reason it is
-        good to set ``offset_buffer`` small so that only minor corrections
-        will be made.
-        *Default=2*
-    subpixels: integer
-        Number of pixels to subdivide the original image. This
-        must be an odd number. *Default=5*
-    normalize: bool
-        Whether or not to normalize the data so that the maximum
-        value is 1. *Default=True*
-    
-    Returns
-    -------
-    obj_data: `numpy.ndarray`
-        The subdivided patch of the image centered on the maximum value.
-    """
-    warnings.warn("This function is depreciated and will be removed "
-        "in the future"
-    )
-    try:
-        from scipy import interpolate
-    except ImportError:
-        raise Exception(
-            "You must have scipy installed to use the subpixel method")
-    # Extract object data from the image with a buffer in case the maximum is 
-    # not in the center
-    data = extract_array(img_data, 
-        (obj_shape[0]+2*offset_buffer, obj_shape[1]+2*offset_buffer), 
-        obj_pos)
-    X = np.arange(0, data.shape[1]*subpixels, subpixels)
-    Y = np.arange(0, data.shape[0]*subpixels, subpixels)
-    data_func = interpolate.RectBivariateSpline(Y, X, data)
-    X = np.arange(0, data.shape[1]*subpixels, 1)
-    Y = np.arange(0, data.shape[0]*subpixels, 1)
-    Z = data_func(Y, X, data)
-    
-    # Get the indices of the maximum value, This may be slightly different from
-    # the center so we will likely have to re-align the image
-    peak_idx = np.unravel_index(np.argmax(Z), Z.shape)
-    center = (int((Z.shape[0]-1)/2), int((Z.shape[1]-1)/2.))
-    dpeak = ((center[0]-peak_idx[0])/subpixels, 
-        (center[1]-peak_idx[1])/subpixels)
-    
-    # Get the the interpolated image centered on the maximum data value
-    # (if the maximum is within the offset buffer)
-    if ((dpeak[0]<offset_buffer) & 
-            (dpeak[1]<offset_buffer)):
-        obj_data = extract_array(Z, (obj_shape[0]*subpixels, 
-            obj_shape[1]*subpixels), peak_idx)
-        peak_idx = np.unravel_index(np.argmax(obj_data), obj_data.shape)
-    else:
-        obj_data = Z
-        if offset_buffer!=0:
-            logger.warn(
-                'Unable to re-center, maximum is at'
-                ' {0} but offset buffer is {1}'.format(
-                dpeak, offset_buffer))
-    
-    # Normalize the data so that each source will be on the same scale
-    if normalize:
-        obj_data = obj_data/np.max(obj_data)
-    return obj_data
 
 def select_psf_sources(img_data, catalog, aper_radius=None,
         min_flux=None, min_amplitude=None, min_dist=None, 
@@ -342,21 +256,123 @@ def build_psf(img_data, aper_radius, sources=None, x='x', y='y',
     psf_array = np.ma.array(psf, mask=circle_mask)
     return psf_array
 
-def get_com_adjustment(arr):
+def perform_psf_photometry(self, separation=None, find_neighbors=True,
+        verbose=False, fit_position=True, pos_range=0, indices=None):
     """
-    Get the center of mass of an array. If the center of mass is the
-    center pixel, the result will be (0,0). Any other value is what must
-    be added to a position to get the center of mass.
+    Perform PSF photometry on all of the sources in the catalog,
+    or if indices is specified, a subset of sources.
+    
+    Parameters
+    ----------
+    separation: float, optional
+        Separation (in pixels) for members to be considered
+        part of the same group *Default=1.5*psf width*
+    find_neighbors: bool, optional
+        Whether or not to find neighbors within a distance
+        of ``separation`` to inlude in the fit for each source.
+        *Default=True*
+    verbose: bool, optional
+        Whether or not to show info about the fit progress.
+        *Default=False*
+    fit_position: bool, optional
+        Whether or not to fit the position along with the
+        amplitude of each source. *Default=True*
+    pos_range: int, optional
+        Maximum number of pixels (in image pixels) that
+        a sources position can be changed. If ``pos_range=0``
+        no bounds will be set. *Default=0*
+    indices: `~numpy.ndarray` or string, optional
+        Indices for sources to calculate PSF photometry.
+        It is often advantageous to remove sources with
+        bad pixels and sublinear flux to save processing time.
+        All sources not included in indices will have their
+        psf flux set to NaN. This can either be an array of
+        indices for the positions in self.catalog or 
+        the name of a saved index in self.indices
     """
-    total = np.ma.sum(arr)
-    x_radius = (arr.shape[1]-1)/2.
-    y_radius = (arr.shape[0]-1)/2.
-    X = np.arange(-x_radius, x_radius+1, 1)
-    Y = np.arange(-y_radius, y_radius+1, 1)
-    X, Y = np.meshgrid(X, Y)
-    dx = np.ma.sum(X*arr)/total
-    dy = np.ma.sum(Y*arr)/total
-    return (dx,dy)
+    import astropyp.catalog
+    
+    # Get the positions and estimated amplitudes of
+    # the sources to fit
+    if indices is not None:
+        if isinstance(indices, six.string_types):
+            indices = self.indices[indices]
+        positions = zip(self.catalog.x[indices], 
+                        self.catalog.y[indices])
+        amplitudes = self.catalog.peak[indices]
+    else:
+        positions = zip(self.catalog.x, self.catalog.y)
+        amplitudes = self.catalog.peak
+    
+    src_count = len(positions)
+    
+    data = self.img
+    src_indices = np.arange(0,len(self.catalog.sources),1)
+    all_positions = np.array(zip(self.catalog.x, self.catalog.y))
+    all_amplitudes = self.catalog.peak
+    total_sources = len(all_amplitudes)
+    self.src_psfs = []
+    
+    psf_flux = np.zeros((total_sources,))
+    psf_flux[:] = np.nan
+    psf_flux_err = np.zeros((total_sources,))
+    psf_flux_err[:] = np.nan
+    psf_x = np.zeros((total_sources,))
+    psf_x[:] = np.nan
+    psf_y = np.zeros((total_sources,))
+    psf_y[:] = np.nan
+    new_amplitudes = np.zeros((total_sources,))
+    new_amplitudes[:] = np.nan
+    
+    # Find nearest neighbors to avoid contamination by nearby sources
+    if separation is None:
+        separation = self.psf._width
+    if find_neighbors:
+        if not hasattr(self,'kd_tree'):
+            from scipy import spatial
+            KDTree = spatial.cKDTree
+            self.kd_tree = KDTree(all_positions)
+        idx, nidx = astropyp.catalog.find_neighbors(separation, 
+            kd_tree=self.kd_tree)
+    
+    # Fit each source to the PSF, calcualte its flux, and its new
+    # position
+    for n in range(len(positions)):
+        if verbose:
+            level = logger.getEffectiveLevel()
+            logger.setLevel(logging.INFO)
+            logger.info("Fitting {0}".format(group_id))
+            logger.setLevel(level)
+        src_idx = src_indices[n]
+        if find_neighbors:
+            n_indices = nidx[idx==src_idx]
+            neighbor_positions = all_positions[n_indices]
+            neighbor_amplitudes = all_amplitudes[n_indices]
+        else:
+            neighbor_positions = []
+            neighbor_amplitudes = []
+        src_psf = SinglePSF(self.psf._psf_array, 
+            amplitudes[n], positions[n][0], positions[n][1],
+            neighbor_positions=neighbor_positions,
+            neighbor_amplitudes=neighbor_amplitudes)
+        psf_flux[src_idx], psf_flux_err[src_idx], residual, new_pos = src_psf.fit(data)
+        new_amplitudes[src_idx] = src_psf.amplitude.value
+        psf_x[src_idx], psf_y[src_idx] = new_pos
+    # Save the psf derived quantities in the catalog
+    # Ignore divide by zero errors that occur when sources
+    # have zero psf flux (i.e. bad sources)
+    np_err = np.geterr()
+    np.seterr(divide='ignore')
+    psf_mag = -2.5*np.log10(psf_flux/self.exptime)
+    self.catalog.sources['psf_flux'] = psf_flux
+    self.catalog.sources['psf_flux_err'] = psf_flux_err
+    self.catalog.sources['psf_mag'] = psf_mag
+    self.catalog.sources['psf_mag_err'] = psf_flux_err/psf_flux
+    self.catalog.sources['psf_x'] = psf_x
+    self.catalog.sources['psf_y'] = psf_y
+    
+    np.seterr(**np_err)
+    return psf_flux, new_amplitudes
 
 class SinglePSF(Fittable2DModel):
     """
@@ -371,30 +387,32 @@ class SinglePSF(Fittable2DModel):
         PSF array using ``subsampling`` subpixels for each pixel in the image
     amplitude: float
         Amplitude of the psf function
-    x_0: float
+    x0: float
         X coordinate in the image
-    y_0: float
+    y0: float
         Y coordinate in the image
     subsampling: int, optional
         Number of subpixels used in the ``psf_array`` for each pixel in the 
         image
-    fix_com: bool
-        Whether or not to correct for a psf peak that is not at the
-        center of mass *Default=False*
+    recenter: bool
+        Whether or not to recenter the data patch on the maximum
+        value. *Default=True*
     fit_position: bool
         Whether or not to fit the positions and the amplitude or only the 
         amplitude. *Default=True, fit positions and amplitude*
     pos_range: float
         +- bounds for the position (if ``fit_position=True``).
         If ``pos_range=0`` then no bounds are used and the 
-        x_0 and y_0 parameters are free. *Default=0*
+        x0 and y0 parameters are free. *Default=0*
     """
     amplitude = Parameter('amplitude')
-    x_0 = Parameter('x_0')
-    y_0 = Parameter('y_0')
+    x0 = Parameter('x0')
+    y0 = Parameter('y0')
+    _param_names = ()
 
-    def __init__(self, psf_array, amplitude, x_0, y_0, subsampling=5,
-            fix_com=False, fit_position=True, pos_range=0):
+    def __init__(self, psf_array, amplitude, x0, y0, subsampling=5,
+            recenter=True, dx=None, dy=None, amp_err=None,
+            neighbor_positions=[], neighbor_amplitudes=[]):
         # Set parameters defined by the psf to None so that they show
         # up as class attributes. self.set_psf_array will set all
         # of these parameters automatically
@@ -404,29 +422,68 @@ class SinglePSF(Fittable2DModel):
         self._subsampling = None
         self._psf_array = None
         
-        self.fix_com = fix_com
+        self.recenter = recenter
         self.fitter = LevMarLSQFitter()
         
-        # The position must be adjusted slightly beause
-        # the center of mass isn't necessarily at the center
-        # of the psf
-        if fix_com:
-            self.com = get_com_adjustment(psf_array)
-        else:
-            self.com = (0,0)
-        super(SinglePSF, self).__init__(n_models=1, x_0=x_0, y_0=y_0,
+        # New CrowdedPSF attributes
+        if len(neighbor_positions)!=len(neighbor_amplitudes):
+            raise Exception("neighbor_positions and neighbors amplitudes "
+                "lengths {0},{1} are nor equal".format(
+                len(neighbor_positions), len(neighbor_amplitudes)))
+        self.src_count = len(neighbor_positions)
+        self.x0_names = ['nx_{0}'.format(n) 
+            for n in range(self.src_count)]
+        self.y0_names = ['ny_{0}'.format(n) 
+            for n in range(self.src_count)]
+        self.amp_names = ['namp{0}'.format(n) 
+            for n in range(self.src_count)]
+        self._param_names = tuple(
+            ['amplitude','x0','y0']+self.x0_names+self.y0_names+self.amp_names)
+        
+        super(SinglePSF, self).__init__(n_models=1, x0=x0, y0=y0,
                                           amplitude=amplitude)
+        
         # Choose whether or not the position of the PSF can be moved
-        if fit_position:
-            self.x_0.fixed = False
-            self.y_0.fixed = False
+        if False: #fit_position:
+            self.x0.fixed = False
+            self.y0.fixed = False
             if pos_range>0:
-                self.x_0.bounds = (self.x_0-pos_range, self.x_0+pos_range)
-                self.y_0.bounds = (self.y_0-pos_range, self.y_0+pos_range)
+                self.x0.bounds = (self.x0-pos_range, self.x0+pos_range)
+                self.y0.bounds = (self.y0-pos_range, self.y0+pos_range)
         else:
-            self.x_0.fixed = True
-            self.y_0.fixed = True
+            pass
+            #self.x0.fixed = True
+            #self.y0.fixed = True
         self.set_psf_array(psf_array, subsampling=subsampling)
+        amplitudes = neighbor_amplitudes
+        # Set parameters for neighboring sources (if any exist)
+        if self.src_count>0:
+            pos_array = np.array(neighbor_positions)
+            x = pos_array[:,0]
+            y = pos_array[:,1]
+            kwargs = OrderedDict()
+
+            for n in range(self.src_count):
+                x0_name = self.x0_names[n]
+                y0_name = self.y0_names[n]
+                amp_name = self.amp_names[n]
+                
+                setattr(self, x0_name, x[n])
+                setattr(self, y0_name, y[n])
+                setattr(self, amp_name, amplitudes[n])
+    
+                if dx is not None:
+                    x0 = getattr(self, x0_name)
+                    x0.bounds = (x[n]-dx,x[n]+dx)
+                if dy is not None:
+                    y0 = getattr(self, y0_name)
+                    y0.bounds = (y[n]-dy,y[n]+dy)
+                if amp_err is not None:
+                    amp = getattr(self, amp_name)
+                    amp.bounds = (
+                        amplitudes[n]*(1-amp_err), 
+                        amplitudes[n]*(1+amp_err))
+        
     @property
     def shape(self):
         """
@@ -443,14 +500,47 @@ class SinglePSF(Fittable2DModel):
         flux = np.sum(self._psf_array*amplitude)/self._subsampling**2
         return flux
     
-    def evaluate(self, X, Y, amplitude, x_0, y_0):
+    def evaluate(self, X, Y, amplitude, x0, y0, *args):
         """
         Evaluate the SinglePSF model.
         """
-        x = X[0,:]-x_0
-        y = Y[:,0]-y_0
-        result = amplitude * self._psf_func(y,x)
+        x = X[0,:]
+        y = Y[:,0]
+        result = amplitude * self._psf_func(y-y0,x-x0)
+        # If the source has any neighbors, add their
+        # fluxes as well
+        nx,ny,namp = self._parse_eval_args(args)
+        for n in range(self.src_count):
+            result += namp[n]*self._psf_func(y-ny[n], x-nx[n])
+        result[self._psf_array.mask] = 0
         return result
+    
+    def _parse_eval_args(self, args):
+        """
+        Separate the x0, y0, and amplitudes into lists
+        """
+        x0 = args[:self.src_count]
+        y0 = args[self.src_count:2*self.src_count]
+        amp = args[2*self.src_count:]
+        return x0,y0,amp
+    
+    @property
+    def param_names(self):
+        return self._param_names
+    
+    def __getattr__(self, attr):
+        if self._param_names and attr in self._param_names:
+            return Parameter(attr, default=0.0, model=self)
+        raise AttributeError(attr)
+
+    def __setattr__(self, attr, value):
+        if attr[0] != '_' and self._param_names and attr in self._param_names:
+            param = Parameter(attr, default=0.0, model=self)
+            # This is a little hackish, but we can actually reuse the
+            # Parameter.__set__ method here
+            param.__set__(self, value)
+        else:
+            super(SinglePSF, self).__setattr__(attr, value)
     
     def fit(self, img_data, fit_position=True, pos_range=0, indices=None):
         """
@@ -465,7 +555,7 @@ class SinglePSF(Fittable2DModel):
             only the amplitude will be fit
         pos_range: float
             Maximum distance that the position is allowed to shift
-            from ``x_0,y_0`` initial. This is most useful when fitting
+            from ``x0,y0`` initial. This is most useful when fitting
             a group of sources where the code might try to significantly
             move one of the sources for the fit. The default range
             is 0, which does not set any bounds at all.
@@ -474,31 +564,61 @@ class SinglePSF(Fittable2DModel):
             to the img_data provided. The default is None, which 
             uses the image scale and size of the psf to set the indices.
         """
-        if indices is None:
-            X = np.linspace(-self._radius, self._radius, 
-                self._subpixel_width)+self.x_0-self.com[0]
-            Y = np.linspace(-self._radius, self._radius, 
-                self._subpixel_width)+self.y_0-self.com[1]
-            X, Y = np.meshgrid(X, Y)
-        else:
-            X,Y = indices
-        
+        import astropyp.utils
         # Extract sub array with data of interest
-        position = (self.y_0.value, self.x_0.value)
-        sub_array_data = get_subpixel_patch(img_data, position, 
-            (self._width, self._width), 0, self._subsampling, False)
-
+        position = (self.y0.value, self.x0.value)
+        patch,X,Y, new_pos = astropyp.utils.misc.get_subpixel_patch(
+            img_data, position, (self._width, self._width), 
+            subsampling=self._subsampling, 
+            window_sampling=300, order=5, # Need to open these options up to the class init
+            normalize=False)
+        
+        # If the source was too close to an edge a patch
+        # cannot be loaded, source the source cannot be fit
+        if patch is None:
+            return np.nan,np.nan,np.nan,(np.nan,np.nan)
+        
+        # Set the values outside the aperture to zero
+        # so they will not affect the fit
+        patch[self._psf_array.mask] = 0
+        
+        self.y0.value, self.x0.value = new_pos
+        X, Y = np.meshgrid(X, Y)
+        
         # Fit only if PSF is completely contained in the image and no NaN
         # values are present
-        if (sub_array_data.shape == self.shape and
-                not np.isnan(sub_array_data).any()):
-            m = self.fitter(self, X, Y, sub_array_data)
-            self.amplitude = m.amplitude
-            self.x_0 = m.x_0
-            self.y_0 = m.y_0
-            return m.amplitude.value
+        if (patch.shape == self.shape and
+                not np.isnan(patch).any()):
+            m = self.fitter(self, X, Y, patch)
+            
+            for p in self._param_names:
+                setattr(self,p,getattr(m,p))
+            
+            residual = self.get_residual(X,Y,patch)
+            self.psf_error = self.calculate_psf_error(residual)
+            return (self.get_flux(), self.psf_error, 
+                residual, (self.x0.value,self.y0.value))
         else:
             return 0
+    
+    def get_residual(self, X,Y, patch):
+        fit = self.__call__(X,Y)
+        residual = patch-fit
+        return residual
+    
+    def calculate_psf_error(self, residual=None, X=None, Y=None, patch=None):
+        """
+        Given either a residual or a patch, calculate the error in PSF flux
+        """
+        if residual is None:
+            if patch is not None and X is not None and Y is not None:
+                residual = self.get_residual(X,Y,patch)
+            else:
+                raise Exception(
+                    "You must either supply a residual or "
+                    "X,Y,patch to calculate psf error")
+        psf_error = np.abs(np.sum(residual/self._subsampling**2))
+        return psf_error
     
     def set_psf_array(self, psf_array, subsampling=None):
         """

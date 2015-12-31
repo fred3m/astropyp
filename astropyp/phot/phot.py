@@ -1,4 +1,5 @@
 import logging
+import warnings
 from collections import OrderedDict
 import numpy as np
 import astropy.units as apu
@@ -152,8 +153,13 @@ class SingleImage:
     def create_psf_groups(self, separation=None, cluster_method='dbscan',
             verbose=False):
         """
-        Group sources with overlapping PSF's
+        Group sources with overlapping PSF's. This method is no longer
+        used and will likely be depreciated as long as the other
+        crowded field routines work.
         """
+        warnings.warn("This function is depreciated and will be removed "
+            "in the future")
+        
         if separation is None:
             separation = self.psf._width
         
@@ -377,49 +383,6 @@ class Exposure:
             for frame in frames:
                 self.ccd_dict[frame].detect_sources(self.sex_params, 
                     gain=self.gain, aper_radius=self.aper_radius)
-
-def match_catalogs(cat1, cat2, ra1='XWIN_WORLD', dec1='YWIN_WORLD', 
-        ra2='XWIN_WORLD', dec2='YWIN_WORLD', max_separation=1*apu.arcsec):
-    """
-    Use astropy.coordinates to match sources in two catalogs and 
-    only select sources within a specified distance
-    
-    """
-    from astropy.coordinates import SkyCoord
-    import astropy.units as apu
-    
-    if isinstance(max_separation, float) or isinstance(max_separation, int):
-        max_separation = max_separation * apu.arcsec
-    c1 = SkyCoord(cat1[ra1], cat1[dec1], unit='deg')
-    c2 = SkyCoord(cat2[ra2], cat2[dec2], unit='deg')
-    idx, d2, d3 = c1.match_to_catalog_sky(c2)
-    matches = d2 < max_separation
-    return idx, matches
-
-def match_all_catalogs(catalogs, ra_names, dec_names, 
-        max_separation=1*apu.arcsec, min_detect=None, combine=True):
-    """
-    Match a list of catalogs based on their ra, dec, and separation
-    """
-    import numpy as np
-    if isinstance(ra_names, six.string_types):
-        ra_names = [ra_names for n in range(len(catalogs))]
-    if isinstance(dec_names, six.string_types):
-        dec_names = [dec_names for n in range(len(catalogs))]
-    catalog = catalogs[0]
-    matches = np.array([True for n in range(len(catalog))])
-    for n in range(1, len(catalogs)):
-        idx, new_matches = match_catalogs(
-            catalog, catalogs[n], ra_names[n-1], dec_names[n-1],
-            ra_names[n], dec_names[n])
-        matches = matches & new_matches
-        catalogs[n] = catalogs[n][idx]
-    for n in range(len(catalogs)):
-        catalogs[n] = catalogs[n][matches]
-    if combine:
-        from astropy.table import vstack
-        catalogs = vstack(catalogs)
-    return catalogs
 
 def calculate_magnitude(x, zero, color, extinct):
     """
