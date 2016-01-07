@@ -238,7 +238,7 @@ def get_subpixel_patch(img_data, src_pos=None, src_shape=None,
         Z = data_func(Y,X)
         if show_plots:
             import matplotlib.pyplot as plt
-            plt.imshow(Z)
+            plt.imshow(Z, interpolation='none')
             plt.title("before centering")
             plt.show()
         yidx,xidx = np.unravel_index(np.argmax(Z), Z.shape)
@@ -254,7 +254,7 @@ def get_subpixel_patch(img_data, src_pos=None, src_shape=None,
         obj_data = data_func(Y, X)
         if show_plots:
             import matplotlib.pyplot as plt
-            plt.imshow(obj_data)
+            plt.imshow(obj_data, interpolation='none')
             plt.title("after centering")
             plt.show()
     

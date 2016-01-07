@@ -1,3 +1,4 @@
+from __future__ import division
 import logging
 import warnings
 from collections import OrderedDict
@@ -56,6 +57,7 @@ class SingleImage:
         self.show_plots = show_plots
         self.groups = groups
         self.indices = indices
+        self.kd_tree = None
         
         if not isinstance(self.catalog, astropyp.catalog.Catalog):
             self.catalog = astropyp.catalog.Catalog(self.catalog)
@@ -68,7 +70,7 @@ class SingleImage:
     
     def detect_sources(self, sex_params={}, aper_radius=None, 
             subtract_bkg=False, gain=None, wcs=None, exptime=None,
-            windowed=True, edge_val=1, transform='wcs'):
+            windowed=False, edge_val=1, transform='wcs'):
         # Set optional parameters
         if aper_radius is None:
             aper_radius = self.aper_radius
@@ -150,15 +152,135 @@ class SingleImage:
         ax.plot_wireframe(X, Y, self.psf._psf_array)#, rstride=5, cstride=5)
         plt.show()
     
+    def perform_psf_photometry(self, method='neighbors',
+            separation=None, 
+            verbose=False, fit_position=True, 
+            pos_range=0, indices=None):
+        """
+        Perform PSF photometry on all of the sources in the catalog,
+        or if indices is specified, a subset of sources.
+        
+        Parameters
+        ----------
+        separation: float, optional
+            Separation (in pixels) for members to be considered
+            part of the same group *Default=psf width*
+        method: string
+            Method to use for performing photometry. This must
+            be one of the following: 
+            'neighbors', which searches
+            for sources within ``separation`` and includes them
+            in the fit for the source in the center;
+            'single', which only fits one source at a time,
+            even if other sources have overlapping apertures; or
+            'group', which groups clusters of sources together
+            and fits all of them simultaneously. *The default
+            (and recommended method is 'nearest')*
+        verbose: bool
+            Whether or not to show info about the fit progress.
+            *Default=False*
+        fit_position: bool
+            Whether or not to fit the position along with the
+            amplitude of each source. *Default=True*
+        pos_range: int
+            Maximum number of pixels (in image pixels) that
+            a sources position can be changed. If ``pos_range=0``
+            no bounds will be set. *Defaul=0*
+        indices: `~numpy.ndarray`
+             Indices for sources to calculate PSF photometry.
+             It is often advantageous to remove sources with
+             bad pixels and sublinear flux to save processing time.
+             All sources not included in indices will have their
+             psf flux set to NaN.
+        """
+        from astropyp.phot.psf import perform_psf_photometry
+        if indices is not None:
+            if isinstance(indices, six.string_types):
+                indices = self.indices[indices]
+        if separation is None and (method=='neighbors' or method=='group'):
+            separation = self.psf._width
+        
+        if method=='neighbors' or method=='single':
+            self.catalog, self.src_psfs, kd_tree = perform_psf_photometry(
+                self.img, self.catalog, self.psf, 
+                separation=separation, 
+                verbose=verbose, fit_position=fit_position, 
+                pos_range=pos_range, indices=indices,
+                kd_tree=self.kd_tree, exptime=self.exptime)
+            if self.kd_tree is None and kd_tree is not None:
+                self.kd_tree = kd_tree
+        elif method=='group':
+            # By default the sources are grouped before performing PSF
+            # photometry
+            if group_sources:
+                self.create_psf_groups(separation=separation, verbose=verbose)
+        
+            if indices is not None:
+                if isinstance(indices, six.string_types):
+                    indices = self.indices[indices]
+                groups = np.unique(self.indices['group'][indices])
+            else:
+                groups = self.groups
+        
+            # Fit PSF for each group or isolated source
+            psf_flux = np.zeros(self.catalog.shape[0])
+            psf_flux[:] = np.nan
+            positions = np.array(zip(self.catalog.x, self.catalog.y))
+            group_indices = self.indices['group']
+            data = self.img
+        
+            for group_id in groups:
+                group = self.groups[group_id]
+                if verbose:
+                    #level = logger.getEffectiveLevel()
+                    logger.setLevel(logging.INFO)
+                    logger.info("Fitting {0}".format(group_id))
+                    #logger.setLevel(level)
+                if isinstance(group, astropyp.phot.psf.SinglePSF):
+                    amplitude = group.fit(data, fit_position, pos_range)
+                    flux = self.psf.get_flux(amplitude)
+                elif isinstance(group, astropyp.phot.psf.GroupPSF):
+                    group_idx = (group_indices==group.group_id)
+                    amplitudes = np.array(group.fit(data))
+                    flux = self.psf.get_flux(amplitude)
+                else:
+                    raise Exception("PSF photometry is currently only"
+                        "supported for the SinglePSF and GroupPSF classes")
+                psf_flux[group_indices==group_id] = np.array(flux)
+            # Caluclate the error in the PSF flux and magnitude
+            # In the future a better method may be to look at the
+            # residual left over after the PSF is subtracted from
+            # the background
+            if self.gain is not None:
+                psf_flux_err = 1.0857*np.sqrt(
+                    2*np.pi*self.psf._radius**2*self.bkg.globalrms**2+
+                    psf_flux/self.gain)
+            else:
+                psf_flux_err = 1.0857*np.sqrt(
+                    2*np.pi*self.psf._radius**2*self.bkg.globalrms**2
+                    )
+            # Save the psf derived quantities in the catalog
+            # Ignore divide by zero errors that occur when sources
+            # have zero psf flux (i.e. bad sources)
+            np_err = np.geterr()
+            np.seterr(divide='ignore')
+            psf_mag = -2.5*np.log10(psf_flux/self.exptime)
+            self.catalog.sources['psf_flux'] = psf_flux
+            self.catalog.sources['psf_flux_err'] = psf_flux_err
+            self.catalog.sources['psf_mag'] = psf_mag
+            self.catalog.sources['psf_mag_err'] = psf_flux_err/psf_flux
+            np.seterr(**np_err)
+        else:
+            raise Exception("PSF method not found")
+        return self.catalog.sources['psf_flux']
     def create_psf_groups(self, separation=None, cluster_method='dbscan',
             verbose=False):
         """
-        Group sources with overlapping PSF's. This method is no longer
-        used and will likely be depreciated as long as the other
-        crowded field routines work.
+        Group sources with overlapping PSF's. This method uses the
+        GroupPSF class and is not as efficient as using the
+        "nearest: method to perform psf photometry on
+        crowded fields.
         """
-        warnings.warn("This function is depreciated and will be removed "
-            "in the future")
         
         if separation is None:
             separation = self.psf._width
@@ -231,101 +353,6 @@ class SingleImage:
                     y[group_indices==group], 'o')
             plt.show()
         return self.groups
-    
-    def perform_psf_photometry(self, separation=None, 
-            group_sources=True, verbose=False, fit_position=True,
-            pos_range=0, indices=None):
-        """
-        Perform PSF photometry on all of the sources in the catalog,
-        or if indices is specified, a subset of sources.
-        
-        Parameters
-        ----------
-        separation: float
-            Separation (in pixels) for members to be considered
-            part of the same group *Default=psf width*
-        group_sources: bool
-            Whether or not to group the sources (if groups have not
-            already bee created for this SingleImage then this must
-            be set to True). *Default=True*
-        verbose: bool
-            Whether or not to show info about the fit progress.
-            *Default=False*
-        fit_position: bool
-            Whether or not to fit the position along with the
-            amplitude of each source. *Default=True*
-        pos_range: int
-            Maximum number of pixels (in image pixels) that
-            a sources position can be changed. If ``pos_range=0``
-            no bounds will be set. *Defaul=0*
-        indices: `~numpy.ndarray`
-             Indices for sources to calculate PSF photometry.
-             It is often advantageous to remove sources with
-             bad pixels and sublinear flux to save processing time.
-             All sources not included in indices will have their
-             psf flux set to NaN.
-        """
-        # By default the sources are grouped before performing PSF
-        # photometry
-        if group_sources:
-            self.create_psf_groups(separation=separation, verbose=verbose)
-        
-        if indices is not None:
-            if isinstance(indices, six.string_types):
-                indices = self.indices[indices]
-            groups = np.unique(self.indices['group'][indices])
-        else:
-            groups = self.groups
-        
-        # Fit PSF for each group or isolated source
-        psf_flux = np.zeros(self.catalog.shape[0])
-        psf_flux[:] = np.nan
-        positions = np.array(zip(self.catalog.x, self.catalog.y))
-        group_indices = self.indices['group']
-        data = self.img
-        
-        for group_id in groups:
-            group = self.groups[group_id]
-            if verbose:
-                level = logger.getEffectiveLevel()
-                logger.setLevel(logging.INFO)
-                logger.info("Fitting {0}".format(group_id))
-                logger.setLevel(level)
-            if isinstance(group, astropyp.phot.psf.SinglePSF):
-                amplitude = group.fit(data, fit_position, pos_range)
-                flux = self.psf.get_flux(amplitude)
-            elif isinstance(group, astropyp.phot.psf.GroupPSF):
-                group_idx = (group_indices==group.group_id)
-                amplitudes = np.array(group.fit(data))
-                flux = self.psf.get_flux(amplitude)
-            else:
-                raise Exception("PSF photometry is currently only"
-                    "supported for the SinglePSF and GroupPSF classes")
-            psf_flux[group_indices==group_id] = np.array(flux)
-        # Caluclate the error in the PSF flux and magnitude
-        # In the future a better method may be to look at the
-        # residual left over after the PSF is subtracted from
-        # the background
-        if self.gain is not None:
-            psf_flux_err = 1.0857*np.sqrt(
-                2*np.pi*self.psf._radius**2*self.bkg.globalrms**2+
-                psf_flux/self.gain)
-        else:
-            psf_flux_err = 1.0857*np.sqrt(
-                2*np.pi*self.psf._radius**2*self.bkg.globalrms**2
-                )
-        # Save the psf derived quantities in the catalog
-        # Ignore divide by zero errors that occur when sources
-        # have zero psf flux (i.e. bad sources)
-        np_err = np.geterr()
-        np.seterr(divide='ignore')
-        psf_mag = -2.5*np.log10(psf_flux/self.exptime)
-        self.catalog.sources['psf_flux'] = psf_flux
-        self.catalog.sources['psf_flux_err'] = psf_flux_err
-        self.catalog.sources['psf_mag'] = psf_mag
-        self.catalog.sources['psf_mag_err'] = psf_flux_err/psf_flux
-        np.seterr(**np_err)
-        return psf_flux
 
 class Exposure:
     """
@@ -393,8 +420,9 @@ def calculate_magnitude(x, zero, color, extinct):
     #return (x[0]-zero+color*x[1]-extinct*x[2])/(1+color)
     return x[0] + zero + color*(x[0]-x[1]) + extinct*x[2]
 
-def calibrate_standard(sources, mag_name, ref1_name, ref2_name, mag_err_name, 
-        ref1_err_name, ref2_err_name, init_zero=-25, init_color=-.1, 
+def calibrate_standard(sources, mag_name, ref1_name, ref2_name, 
+        mag_err_name=None, 
+        ref1_err_name=None, ref2_err_name=None, init_zero=-25, init_color=-.1, 
         init_extinction=.1, fit_package='scipy', airmass_name='airmass'):
     """
     Calibrate a standard field with a set of refernce fields
@@ -431,6 +459,21 @@ def calibrate_standard(sources, mag_name, ref1_name, ref2_name, mag_err_name,
     ref_mag2 = good_sources[ref2_name]
     airmass = good_sources[airmass_name]
     
+    # Add weights if the user specified any weights
+    if (mag_err_name is not None or 
+            ref1_err_name is not None or 
+            ref2_err_name is not None):
+        weights = np.zeros((len(good_sources),))
+        if mag_err_name is not None:
+            weights += good_sources[mag_err_name]**2
+        if ref1_err_name is not None:
+            weights += good_sources[ref1_err_name]**2
+        if ref2_err_name is not None:
+            weights += good_sources[ref2_err_name]**2
+        weights = 1/weights
+    else:
+        weights = None
+    
     if fit_package=='scipy':
         from scipy.optimize import curve_fit
         x = [ref_mag1,ref_mag2,airmass]
@@ -440,8 +483,12 @@ def calibrate_standard(sources, mag_name, ref1_name, ref2_name, mag_err_name,
         good_sources['diff'] = good_sources[mag_name] - good_sources[ref1_name]
         good_sources['color'] = good_sources[ref1_name] - \
             good_sources[ref2_name]
-        result = smf.OLS.from_formula(formula='diff ~ color + airmass', 
-            data=good_sources).fit()
+        if weights is None:
+            result = smf.OLS.from_formula(formula='diff ~ color + airmass', 
+                data=good_sources).fit()
+        else:
+            result = smf.WLS.from_formula(formula='diff ~ color + airmass', 
+                data=good_sources, weights=weights).fit()
         results = [result.params.Intercept, result.params.color, 
             result.params.airmass],result
     else:

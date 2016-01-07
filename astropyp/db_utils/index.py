@@ -331,11 +331,11 @@ def query(sql, connection):
         return Table()
     
     # temporary check
-    for n in range(len(col_names)):
-        logger.info('column: {0}, type: {1}, python type: {2}'.format(
-            col_names[n],
-            meta.tables[tbl_name].columns[col_names[n]].type,
-            meta.tables[tbl_name].columns[col_names[n]].type.python_type))
+    #for n in range(len(col_names)):
+    #    logger.info('column: {0}, type: {1}, python type: {2}'.format(
+    #        col_names[n],
+    #        meta.tables[tbl_name].columns[col_names[n]].type,
+    #        meta.tables[tbl_name].columns[col_names[n]].type.python_type))
     
     if set_dtype:
         result_list = zip(*result_list)

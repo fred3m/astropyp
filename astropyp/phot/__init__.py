@@ -4,3 +4,4 @@ import astropyp.phot.phot
 import astropyp.phot.psf
 import astropyp.phot.plots
 import astropyp.phot.detect
+import astropyp.phot.stack

@@ -297,42 +297,6 @@ def merge_catalogs(catalogs,
                         np.array(catalog[field]),idx)
     return tbl
 
-def save_catalog(tbl, connection, tbl_name, frame, if_exists='append'):
-    """
-    Save sources to source list to a database. 
-    This will overwrite any sources saved from the same frame, 
-    but sources from other frames in the same table will be 
-    unaffected. *This function requires SQLAlchemy*
-    
-    Parameters
-    ----------
-    tbl: `~astropy.table/Table` or `Catalog`
-        Source catalog to save
-    connection: string or `~sqlalchemy.engine.base.Engine`
-        Either connection string or SQLAlchemy database engine
-        to connect to the database
-    tbl_name: string
-        Name of the table to create or update in the database
-    frame: int
-        Name/Number of the frame (CCD in detector array) used
-        to generate the catalog
-    """
-    from astropyp import db_utils
-    # Connect to the database
-    engine = db_utils.index.init_connection(connection)
-    meta, db_tbl, session = db_utils.index.connect2idx(engine, 
-        tbl_name)
-    
-    # First delete all of the rows for the current frame (if any exist)
-    if db_tbl is not None:
-        engine.execute(db_tbl.delete().where(db_tbl.c.frame==frame))
-    # Append the current source list to the list of sources from other CCDs
-    if isinstance(tbl, Catalog):
-        tbl = tbl.sources
-    tbl['frame'] = frame#np.ones((len(tbl),),dtype=int)*frame
-    df = tbl.to_pandas()
-    df.to_sql(tbl_name, engine, if_exists=if_exists)
-
 def find_neighbors(radius, positions=None, kd_tree=None):
     """
     Find all neighbors within radius of each source in a list of

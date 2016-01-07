@@ -41,7 +41,7 @@ def get_img_flags(dqmask, x, y, shape, edge_val=1):
 
 def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None, 
         sex_params={}, objects=None, subtract_bkg=False, gain=None, 
-        wcs=None, aper_radius=None, windowed=True, edge_val=1, origin=0,
+        wcs=None, aper_radius=None, windowed=False, edge_val=1, origin=0,
         transform='wcs'):
     """
     Load sources from an image and if a data quality mask is provided, included
@@ -138,6 +138,7 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
             objects['ra'], objects['dec'], 0)
     
     if windowed:
+        logger.info("using kron to get windowed positions")
         # Calculate the kron radius
         if 'kron_radius' not in objects:
             objects['kron_radius'], flags = sep.kron_radius(

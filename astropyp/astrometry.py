@@ -137,6 +137,125 @@ class AstrometricSolution:
             y += y_tbl[column] * value
         return x+self.crpix[0], y+self.crpix[1]
 
+class ImageSolution:
+    """
+    ImageSolution can be used to calculate transformations
+    from one image to another (ie x coordinates to y coordinates)
+    """
+    def __init__(self, x_tx=None, y_tx=None, order=None, 
+            init_mean=[None,None], init_stddev=[None,None], 
+            init_rms=[None,None], **kwargs):
+        self.x_tx = x_tx
+        self.y_tx = y_tx
+        self.order = order
+        self.mean = init_mean
+        self.stddev = init_stddev
+        self.rms = init_rms
+        
+        for k,v in kwargs.items():
+            setattr(self, k, v)
+    @property
+    def stats(self):
+        stats = self.get_fit_stats()
+        result = {'mean':stats[0], 'stddev':stats[1], 'rms':stats[2]}
+        return result
+    def get_solution(self, catalog1, catalog2, order=None, match=False):
+        """
+        Get transformation from one set of pixel coordinates to another
+        """
+        from astropyp.catalog import Catalog
+        
+        if order is None:
+            if self.order is None:
+                raise Exception("You must give an order for the polynomial")
+            order = self.order
+        if match:
+            # Match the catalog with the reference catalog
+            cat_coords = coordinates.SkyCoord(cat.ra, cat.dec, unit='deg')
+            refcat_coords = coordinates.SkyCoord(
+                refcat.ra, refcat.dec, unit='deg')
+            idx, d2, d3 = cat_coords.match_to_catalog_sky(refcat_coords)
+            matched = d2<separation
+            result = OrderedDict()
+            cat1 = catalog1[matched]
+            cat2 = catalog2[idx][matched]
+        else:
+            if len(catalog1)!=len(catalog2):
+                raise Exception("Catalogs either must be the same length "
+                    "or you must use matching")
+            cat1 = catalog1
+            cat2 = catalog2
+        # Make sure that you are using Catalogs
+        if not isinstance(cat1, Catalog):
+            cat1 = Catalog(cat1)
+        if not isinstance(cat2, Catalog):
+            cat2 = Catalog(cat2)
+            
+        x_result = _get_solution(cat1.x, cat1.y, cat2.x, 
+            order, 'ref_x', prefix='A')
+        y_result = _get_solution(cat1.y, cat1.x, cat2.y, 
+            order, 'ref_y', prefix='B')
+        self.x_tx = x_result['params']
+        self.y_tx = y_result['params']
+        del x_result['params']
+        del y_result['params']
+        self.x_info = x_result
+        self.y_info = y_result
+        if match:
+            result = (cat1,cat2,idx,matched)
+        else:
+            result = None
+        self.create_fit_stats(cat1, cat2)
+        return result
+    def transform_coords(self, catalog=None, x=None, y=None):
+        """
+        Use the solution to transform the pixel coordinates
+        """
+        from astropyp.catalog import Catalog
+        ungroup = False
+        if catalog is None:
+            try:
+                len(x)
+            except TypeError:
+                x = [x]
+                y = [y]
+                ungroup = True
+            catalog = table.Table([x,y],names=('x','y'))
+        if not isinstance(catalog, Catalog):
+            cat = Catalog(catalog)
+        else:
+            cat = catalog
+        x_tbl = get_transform_tbl(cat.x, cat.y, self.order, 'A')
+        x_tbl['Intercept'] = 1
+        x = 0
+        for column, value in self.x_tx.items():
+            x += x_tbl[column] * value
+        y_tbl = get_transform_tbl(cat.y, cat.x, self.order, 'B')
+        y_tbl['Intercept'] = 1
+        y = 0
+        for column, value in self.y_tx.items():
+            y += y_tbl[column] * value
+        if ungroup:
+            x = x[0]
+            y = y[0]
+        return x,y
+    def create_fit_stats(self, catalog1, catalog2):
+        from astropyp.catalog import Catalog
+        if not isinstance(catalog2, Catalog):
+            cat2 = Catalog(catalog2)
+        else:
+            cat2 = catalog2
+        x,y = self.transform_coords(catalog1)
+        x_diff = x-cat2.x
+        y_diff = y-cat2.y
+        self.mean = [np.mean(x_diff), np.mean(y_diff)]
+        self.stddev = [np.std(x_diff), np.std(y_diff)]
+        self.rms = [np.sqrt(np.sum(x_diff**2)/len(x_diff)),
+                    np.sqrt(np.sum(y_diff**2)/len(y_diff))]
+        return self.get_fit_stats()
+    def get_fit_stats(self):
+        return self.mean, self.stddev, self.rms
+
 def get_transform_tbl(x, y, order, prefix='A'):
     """
     Given a set of x and y positions, create a table with the different
@@ -191,7 +310,7 @@ def build_formula(param_name, transform_tbl):
     """
     formula = "{0} ~ ".format(param_name)
     formula += '+'.join(transform_tbl.columns.keys())
-    logger.info('formula: "{0}"'.format(formula))
+    logger.debug('formula: "{0}"'.format(formula))
     return formula
 
 def _statsmodels_to_result(params):

@@ -155,8 +155,8 @@ def select_psf_sources(img_data, catalog, aper_radius=None,
     
     # If verbose, print information about the cuts
     if verbose:
-        level = logger.getEffectiveLevel()
-        logger.setLevel(logging.INFO)
+        #level = logger.getEffectiveLevel()
+        #logger.setLevel(logging.INFO)
         logger.info('Total sources: {0}'.format(rows)),
         logger.info('Sources with low flux: {0}'.format(
             rows-np.sum(min_flux_flag)))
@@ -171,7 +171,7 @@ def select_psf_sources(img_data, catalog, aper_radius=None,
         logger.info('Sources near an edge: {0}'.format(
             rows-np.sum(edge_flag)))
         logger.info('Sources after cuts: {0}'.format(np.sum(psf_idx))),
-        logger.setLevel(level)
+        #logger.setLevel(level)
     return psf_idx, flags
 
 def build_psf(img_data, aper_radius, sources=None, x='x', y='y', 
@@ -256,21 +256,25 @@ def build_psf(img_data, aper_radius, sources=None, x='x', y='y',
     psf_array = np.ma.array(psf, mask=circle_mask)
     return psf_array
 
-def perform_psf_photometry(self, separation=None, find_neighbors=True,
-        verbose=False, fit_position=True, pos_range=0, indices=None):
+def perform_psf_photometry(data, catalog, psf, separation=None, 
+        verbose=False, fit_position=True, pos_range=0, indices=None,
+        kd_tree=None, exptime=None):
     """
     Perform PSF photometry on all of the sources in the catalog,
     or if indices is specified, a subset of sources.
     
     Parameters
     ----------
+    data: `~numpy.ndarray`
+        Image containing the sources
+    catalog: `~astropyp.catalog.Catalog`
+        Catalog of sources to use. This must contain the
+        x,y keys.
+    psf: `SinglePSF`
+        PSF to use for the fit
     separation: float, optional
         Separation (in pixels) for members to be considered
         part of the same group *Default=1.5*psf width*
-    find_neighbors: bool, optional
-        Whether or not to find neighbors within a distance
-        of ``separation`` to inlude in the fit for each source.
-        *Default=True*
     verbose: bool, optional
         Whether or not to show info about the fit progress.
         *Default=False*
@@ -289,73 +293,70 @@ def perform_psf_photometry(self, separation=None, find_neighbors=True,
         psf flux set to NaN. This can either be an array of
         indices for the positions in self.catalog or 
         the name of a saved index in self.indices
+    kd_tree: `scipy.spatial.KDTree`, optional
+        KD tree containing all of the sources in the catalog
+    exptime: float, optional
+        Exposure time of the image 
+        (needed to calculate the psf magnitude).
     """
     import astropyp.catalog
     
     # Get the positions and estimated amplitudes of
     # the sources to fit
     if indices is not None:
-        if isinstance(indices, six.string_types):
-            indices = self.indices[indices]
-        positions = zip(self.catalog.x[indices], 
-                        self.catalog.y[indices])
-        amplitudes = self.catalog.peak[indices]
+        positions = zip(catalog.x[indices], 
+                        catalog.y[indices])
+        amplitudes = catalog.peak[indices]
     else:
-        positions = zip(self.catalog.x, self.catalog.y)
-        amplitudes = self.catalog.peak
+        positions = zip(catalog.x, catalog.y)
+        amplitudes = catalog.peak
     
     src_count = len(positions)
     
-    data = self.img
-    src_indices = np.arange(0,len(self.catalog.sources),1)
-    all_positions = np.array(zip(self.catalog.x, self.catalog.y))
-    all_amplitudes = self.catalog.peak
+    src_indices = np.arange(0,len(catalog.sources),1)
+    all_positions = np.array(zip(catalog.x, catalog.y))
+    all_amplitudes = catalog.peak
     total_sources = len(all_amplitudes)
-    self.src_psfs = []
+    src_psfs = []
     
-    psf_flux = np.zeros((total_sources,))
-    psf_flux[:] = np.nan
-    psf_flux_err = np.zeros((total_sources,))
-    psf_flux_err[:] = np.nan
-    psf_x = np.zeros((total_sources,))
-    psf_x[:] = np.nan
-    psf_y = np.zeros((total_sources,))
-    psf_y[:] = np.nan
-    new_amplitudes = np.zeros((total_sources,))
-    new_amplitudes[:] = np.nan
+    psf_flux = np.ones((total_sources,))*np.nan
+    psf_flux_err = np.ones((total_sources,))*np.nan
+    psf_x = np.ones((total_sources,))*np.nan
+    psf_y = np.ones((total_sources,))*np.nan
+    new_amplitudes = np.ones((total_sources,))*np.nan
     
     # Find nearest neighbors to avoid contamination by nearby sources
-    if separation is None:
-        separation = self.psf._width
-    if find_neighbors:
-        if not hasattr(self,'kd_tree'):
+    if separation is not None:
+        if kd_tree is None:
             from scipy import spatial
             KDTree = spatial.cKDTree
-            self.kd_tree = KDTree(all_positions)
+            kd_tree = KDTree(all_positions)
         idx, nidx = astropyp.catalog.find_neighbors(separation, 
-            kd_tree=self.kd_tree)
+            kd_tree=kd_tree)
     
     # Fit each source to the PSF, calcualte its flux, and its new
     # position
     for n in range(len(positions)):
         if verbose:
-            level = logger.getEffectiveLevel()
+            #level = logger.getEffectiveLevel()
             logger.setLevel(logging.INFO)
             logger.info("Fitting {0}".format(group_id))
-            logger.setLevel(level)
-        src_idx = src_indices[n]
-        if find_neighbors:
+            #logger.setLevel(level)
+        src_idx = src_indices[indices][n]
+        if separation is not None:
             n_indices = nidx[idx==src_idx]
             neighbor_positions = all_positions[n_indices]
             neighbor_amplitudes = all_amplitudes[n_indices]
         else:
             neighbor_positions = []
             neighbor_amplitudes = []
-        src_psf = SinglePSF(self.psf._psf_array, 
+        src_psf = SinglePSF(psf._psf_array, 
             amplitudes[n], positions[n][0], positions[n][1],
+            subsampling=psf._subsampling,
             neighbor_positions=neighbor_positions,
             neighbor_amplitudes=neighbor_amplitudes)
-        psf_flux[src_idx], psf_flux_err[src_idx], residual, new_pos = src_psf.fit(data)
+        psf_flux[src_idx], psf_flux_err[src_idx], residual, new_pos = \
+            src_psf.fit(data)
         new_amplitudes[src_idx] = src_psf.amplitude.value
         psf_x[src_idx], psf_y[src_idx] = new_pos
     # Save the psf derived quantities in the catalog
@@ -363,16 +364,16 @@ def perform_psf_photometry(self, separation=None, find_neighbors=True,
     # have zero psf flux (i.e. bad sources)
     np_err = np.geterr()
     np.seterr(divide='ignore')
-    psf_mag = -2.5*np.log10(psf_flux/self.exptime)
-    self.catalog.sources['psf_flux'] = psf_flux
-    self.catalog.sources['psf_flux_err'] = psf_flux_err
-    self.catalog.sources['psf_mag'] = psf_mag
-    self.catalog.sources['psf_mag_err'] = psf_flux_err/psf_flux
-    self.catalog.sources['psf_x'] = psf_x
-    self.catalog.sources['psf_y'] = psf_y
-    
+    catalog.sources['psf_flux'] = psf_flux
+    catalog.sources['psf_flux_err'] = psf_flux_err
+    if exptime is not None:
+        psf_mag = -2.5*np.log10(psf_flux/exptime)
+        catalog.sources['psf_mag'] = psf_mag
+        catalog.sources['psf_mag_err'] = psf_flux_err/psf_flux
+        catalog.sources['psf_x'] = psf_x
+        catalog.sources['psf_y'] = psf_y
     np.seterr(**np_err)
-    return psf_flux, new_amplitudes
+    return catalog, src_psfs, kd_tree
 
 class SinglePSF(Fittable2DModel):
     """
