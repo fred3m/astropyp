@@ -36,7 +36,7 @@ class SingleImage:
             exptime=None, catalog=None, psf=None,
             subsampling=5, aper_radius=None, bkg=None,
             cluster_method='dbscan', mask_group=True,
-            show_plots=False, groups=[], indices=OrderedDict()):
+            show_plots=False, groups=None, indices=None):
         
         self.header = header
         self.img = img
@@ -55,7 +55,11 @@ class SingleImage:
         self.cluster_method = cluster_method
         self.mask_group = mask_group
         self.show_plots = show_plots
+        if groups is None:
+            groups = []
         self.groups = groups
+        if indices is None:
+            indices = OrderedDict()
         self.indices = indices
         self.kd_tree = None
         

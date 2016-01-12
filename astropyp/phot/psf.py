@@ -543,47 +543,63 @@ class SinglePSF(Fittable2DModel):
         else:
             super(SinglePSF, self).__setattr__(attr, value)
     
-    def fit(self, img_data, fit_position=True, pos_range=0, indices=None):
+    def fit(self, img_data=None, fit_position=True, pos_range=0, indices=None,
+            patch=None, X=None, Y=None):
         """
         Fit the PSF to the data.
         
         Parameters
         ----------
-        img_data: array-like
-            Image data containing the source to fit
-        fit_position: bool
+        img_data: array-like, optional
+            Image data containing the source to fit. Either img_data must
+            be specified or patch.
+        fit_position: bool, optional
             Whether or not to fit the position. If ``fit_position=False``
             only the amplitude will be fit
-        pos_range: float
+        pos_range: float, optional
             Maximum distance that the position is allowed to shift
             from ``x0,y0`` initial. This is most useful when fitting
             a group of sources where the code might try to significantly
             move one of the sources for the fit. The default range
             is 0, which does not set any bounds at all.
-        indices: list of arrays
+        indices: list of arrays, optional
             ``indices`` is a list that contains the X and Y indices
             to the img_data provided. The default is None, which 
             uses the image scale and size of the psf to set the indices.
+        patch: subsampled image patch, optional
+            Subset of data to use for the fit. If not included (default)
+            then img_data must be specified. This must be the same shape
+            as the psf.
+        X,Y: array-like, optional
+            Positions for the coordinates on the x,y axes associated with
+            the patch. These must be given if patch is not None.
         """
         import astropyp.utils
         # Extract sub array with data of interest
         position = (self.y0.value, self.x0.value)
-        patch,X,Y, new_pos = astropyp.utils.misc.get_subpixel_patch(
-            img_data, position, (self._width, self._width), 
-            subsampling=self._subsampling, 
-            window_sampling=300, order=5, # Need to open these options up to the class init
-            normalize=False)
-        
-        # If the source was too close to an edge a patch
-        # cannot be loaded, source the source cannot be fit
         if patch is None:
-            return np.nan,np.nan,np.nan,(np.nan,np.nan)
+            patch,X,Y, new_pos = astropyp.utils.misc.get_subpixel_patch(
+                img_data, position, (self._width, self._width), 
+                subsampling=self._subsampling, 
+                window_sampling=300, order=5, # Need to open these options up to the class init
+                normalize=False)
+            # If the source was too close to an edge a patch
+            # cannot be loaded, source the source cannot be fit
+            if patch is None:
+                return np.nan,np.nan,np.nan,(np.nan,np.nan)
+            self.y0.value, self.x0.value = new_pos
+        else:
+            new_pos = (self.y0.value, self.x0.value)
+            x_radius = self.shape[1]/self._subsampling
+            y_radius = self.shape[0]/self._subsampling
+            x0 = self.x0.value
+            y0 = self.y0.value
+            X = np.linspace(x0-x_radius, x0+x_radius, self.shape[1])
+            Y = np.linspace(y0-y_radius, y0+y_radius, self.shape[0])
         
         # Set the values outside the aperture to zero
         # so they will not affect the fit
         patch[self._psf_array.mask] = 0
-        
-        self.y0.value, self.x0.value = new_pos
         X, Y = np.meshgrid(X, Y)
         
         # Fit only if PSF is completely contained in the image and no NaN
@@ -600,7 +616,7 @@ class SinglePSF(Fittable2DModel):
             return (self.get_flux(), self.psf_error, 
                 residual, (self.x0.value,self.y0.value))
         else:
-            return 0
+            return (0, 0, patch, (self.x0.value,self.y0.value))
     
     def get_residual(self, X,Y, patch):
         fit = self.__call__(X,Y)
