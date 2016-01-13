@@ -588,10 +588,9 @@ def _stack_psf_worker(args):
         patch=patch, X=X, Y=Y)
     new_amplitude = src_psf.amplitude.value
     return psf_flux, psf_flux_err, src_psf.amplitude.value, new_pos
-    
 
 def reproject_image(img, x, y, new_x, new_y, tx_solution=None,
-        dqmask=None, max_offset=3, subsampling=5, 
+        dqmask=None, subsampling=5, 
         show_plot=False, dqmask_min=0, bad_pix_val=1):
     """
     Reproject one image onto another using image coordinates
@@ -619,10 +618,6 @@ def reproject_image(img, x, y, new_x, new_y, tx_solution=None,
         either be in the coordinate system of ``img``, in which case
         ``reproject_dqmask=True`` or in the new coordinate system,
         in which case ``reproject_dqmask=False``.
-    max_offset: int, optional
-        Maximum number of pixels a the image is allowed to be moved to
-        recenter on the maximum subpixel (in image pixels, not subpixels).
-        *Default=3*
     subsampling: int
         Number of subdivisions of each pixel. *Default=5*
     show_plot: bool, optional
@@ -654,8 +649,11 @@ def reproject_image(img, x, y, new_x, new_y, tx_solution=None,
         been subsampled and re-centered
     """
     from scipy import interpolate
-    from astropy.nddata.utils import extract_array
+    from astropy.nddata.utils import overlap_slices
     import astropyp.utils
+    from astropyp.utils.misc import extract_array
+    from scipy.ndimage import zoom
+    
     src_shape = (len(new_y)/subsampling, len(new_x)/subsampling)
     
     # Convert the centroid position from destination coordinates
@@ -664,12 +662,19 @@ def reproject_image(img, x, y, new_x, new_y, tx_solution=None,
         x0,y0 = tx_solution.transform_coords(x=x, y=y)
     else:
         x0,y0 = (x,y)
-    data, X0, Y0, new_pos = astropyp.utils.misc.get_subpixel_patch(
-        img, src_pos=(y0,x0), src_shape=src_shape, 
-        max_offset=max_offset, subsampling=subsampling, normalize=False)
-    if data is None:
-        return None, dqmask, X0, Y0, new_pos
-    Z = interpolate.RectBivariateSpline(Y0, X0, data)
+    
+    data, slices = extract_array(img,
+        src_shape, (y0,x0), subsampling=subsampling, return_slices=True)
+    y_radius = int(src_shape[0]/2)
+    x_radius = int(src_shape[1]/2)
+    X0 = np.linspace(x0-x_radius, x0+x_radius, data.shape[1])
+    Y0 = np.linspace(y0-y_radius, y0+y_radius, data.shape[0])
+    
+    #Z = interpolate.RectBivariateSpline(
+    #    Y0[slices[1][0]], X0[slices[1][1]], data[slices[1]])
+    X0 = X0[slices[1][1]]
+    Y0 = Y0[slices[1][0]]
+    Z = interpolate.RectBivariateSpline(Y0,X0, data[slices[1]])
     
     # Convert the coordinates from the destination to the
     # current image and extract the interpolated pixels
@@ -677,13 +682,29 @@ def reproject_image(img, x, y, new_x, new_y, tx_solution=None,
         X,Y = tx_solution.transform_coords(x=new_x, y=new_y)
     else:
         X,Y = (new_x, new_y)
-    modified_data = Z(Y,X)
+    X = X[slices[1][1]]
+    Y = Y[slices[1][0]]
+    
+    modified_data = np.zeros(data.shape)
+    modified_data[:] = np.nan
+    modified_data[slices[1]] = Z(Y,X)
     modified_data = np.ma.array(modified_data)
+    modified_data.mask = np.isnan(modified_data)
     if dqmask is not None:
-        modified_dqmask = reproject_dqmask(
-            dqmask, new_pos[1], new_pos[0], X, Y, None,
-            subsampling, show_plot, bad_pix_val)
-        modified_data.mask = modified_dqmask>dqmask_min
+        modified_dqmask = np.zeros(data.shape)
+        modified_dqmask[:] = bad_pix_val
+        new_dqmask = extract_array(dqmask, src_shape, (y0,x0), 
+            masking=True, fill_value=bad_pix_val)
+        new_dqmask = zoom(new_dqmask, subsampling, order=0)
+        new_dqmask = new_dqmask[slices[1]]
+        Xold,Yold = np.meshgrid(X0,Y0)
+        Xnew,Ynew = np.meshgrid(X,Y)
+        coords = zip(Yold.flatten(), Xold.flatten())
+        new_coords = zip(Ynew.flatten(), Xnew.flatten())
+        new_dqmask = interpolate.griddata(coords,
+            new_dqmask.flatten(),new_coords, method='nearest')
+        modified_dqmask[slices[1]] = new_dqmask.reshape(Xold.shape)
+        modified_data.mask = modified_data.mask | (modified_dqmask>dqmask_min)
     else:
         modified_dqmask = None
     if show_plot:
@@ -691,90 +712,10 @@ def reproject_image(img, x, y, new_x, new_y, tx_solution=None,
         import matplotlib.pyplot as plt
         plt.imshow(modified_data, interpolation='none')
         plt.show()
-    return modified_data, modified_dqmask, X0, Y0, new_pos
+    return modified_data, modified_dqmask
 
-def reproject_dqmask(dqmask, x, y, new_x, new_y, tx_solution=None,
-        subsampling=5, show_plot=False, bad_pix_val=1):
-    """
-    Reproject a data quality mask onto another using image coordinates
-    
-    Parameters
-    ----------
-    dqmask: array-like
-        Array containing the image to reproject
-    x,y: float
-        Coordinates at the center of the projection. If ``tx_solutions``
-        is None, these must be in the original image coordinates. 
-        Otherwise these must be in the reprojected image coordinates.
-    new_x, new_y: array-like
-        Coordinate positions for each pixel on the x and y axes in the
-        image. If ``tx_solutions`` is None, these must be in the 
-        original image coordinates. Otherwise these must be in the 
-        reprojected image coordinates.
-    tx_solution: `~astropyp.catalog.ImageSolution`, optional
-        Astrometric solution to transform from the current image coordinates
-        to the new image coordinates. If x, y, new_x, new_y are all in the
-        original image coordinates, set ``tx_solution`` to None.
-        *Default is None*
-    subsampling: int
-        Number of subdivisions of each pixel. *Default=5*
-    show_plot: bool, optional
-        Whether or not to show a plot of the reprojected image.
-        *Default=False*
-    bad_pix_val: int, optional
-        Value to set bad pixels to in the dqmask. This is only 
-        necessary if using a dqmask. *Default=1*
-    
-    Results
-    -------
-    modified_data: `~numpy.ndarray`
-        dqmask in the reprojected coordinate system. This will be
-        ``None`` if no dqmask was passed to the function.
-    """
-    from scipy import interpolate
-    from astropy.nddata.utils import extract_array
-    from scipy.ndimage import zoom
-    
-    src_shape = (len(new_y)/subsampling, len(new_x)/subsampling)
-    # Convert the centroid position from destination coordinates
-    # to current image coordinates and extract the subsampled image
-    if tx_solution is not None:
-        x0,y0 = tx_solution.transform_coords(x=x, y=y)
-    else:
-        x0,y0 = (x,y)
-    dqdata = extract_array(dqmask, src_shape, (y0,x0))
-    # Set any edge values to the bad_pix_val and scale the dqmask
-    # with a nearest neighbor (pixelated) interpolation
-    dqdata[dqdata<0] = bad_pix_val
-    dqdata = zoom(dqdata, subsampling, order=0)
-    # Extract the projected patch
-    radius = 0.5*(np.array(src_shape)-1)
-    X = np.linspace(x0-radius[1], x0+radius[1], dqdata.shape[1])
-    Y = np.linspace(y0-radius[0], y0+radius[0], dqdata.shape[0])
-    X,Y = np.meshgrid(X,Y)
-    coords = zip(Y.flatten(),X.flatten())
-    
-    # Convert the coordinates from the destination to the
-    # current image and extract the interpolated pixels
-    if tx_solution is not None:
-        X1,Y1 = tx_solution.transform_coords(x=new_x, y=new_y)
-    else:
-        X1,Y1 = (new_x, new_y)
-    X1,Y1 = np.meshgrid(X1,Y1)
-    new_coords = zip(Y1.flatten(),X1.flatten())
-    modified_data = interpolate.griddata(coords, 
-        dqdata.flatten(), 
-        new_coords, 
-        method='nearest').reshape(dqdata.shape)
-    if show_plot:
-        import matplotlib
-        import matplotlib.pyplot as plt
-        plt.imshow(modified_data, interpolation='none')
-        plt.show()
-    return modified_data
-
-def stack_source(images, x, y, src_shape, index, tx_solutions,
-        dqmasks=None, max_offset=3, subsampling=5, combine_method='mean', 
+def stack_source(images, x, y, src_shape, ref_index, tx_solutions,
+        dqmasks=None, subsampling=5, combine_method='mean', 
         show_plots=False, dqmask_min=0, bad_pix_val=1):
     """
     Stack all the images of a given source.
@@ -788,17 +729,13 @@ def stack_source(images, x, y, src_shape, index, tx_solutions,
     src_shape: tuple of integers
         Shape (y,x) of the patch to extract from each image. Typically
         this is 2*aper_radius+1.
-    index: int
+    ref_index: int
         Index in ``images`` and ``dqmasks`` of the image the others
         are projected onto for the stack.
     tx_solutions: list of `~astropyp.catalog.ImageSolution`s
         Transformations to convert each image to the projected coordinates
     dqmasks: list of `~numpy.ndarrays`'s, optional
         Dqmasks for images to stack
-    max_offset: int, optional
-        Maximum number of pixels a the image is allowed to be moved to
-        recenter on the maximum subpixel (in image pixels, not subpixels).
-        *Default=3*
     subsampling: int
         Number of subdivisions of each pixel. *Default=5*
     combine_method: string
@@ -817,7 +754,7 @@ def stack_source(images, x, y, src_shape, index, tx_solutions,
     """
     from astropyp.catalog import Catalog
     from scipy.ndimage import zoom
-    from astropy.nddata.utils import extract_array
+    from astropyp.utils.misc import extract_array
     import astropyp.utils
     
     if combine_method=='median':
@@ -828,27 +765,36 @@ def stack_source(images, x, y, src_shape, index, tx_solutions,
         raise Exception(
             "Combine method must be either 'median' or 'mean'")
     # Get the patch from the original image
-    data, x_new, y_new, new_pos = astropyp.utils.misc.get_subpixel_patch(
-        images[index], src_pos=(y,x), src_shape=src_shape, 
-        max_offset=max_offset, subsampling=subsampling, normalize=False)
+    data = extract_array(images[ref_index],
+        src_shape, (y,x), subsampling=subsampling)
+    y_radius = src_shape[0]>>1
+    x_radius = src_shape[1]>>1
+    x_new = np.linspace(x-x_radius, x+x_radius, data.shape[1])
+    y_new = np.linspace(y-y_radius, y+y_radius, data.shape[0])
+    
+    # Mask bad pixels and edges
+    data = np.ma.array(data)
+    data.mask = np.isnan(data)
     
     if dqmasks is not None:
         # Get the data quality mask for the original image and
         # set any edge values to the bad_pix_val, and scale the dqmask
         # with a nearest neighbor (pixelated) interpolation
-        dqmask = extract_array(dqmasks[index], src_shape, (y,x))
+        dqmask = extract_array(dqmasks[ref_index], src_shape, (y,x), 
+                               fill_value=bad_pix_val)
         dqmask[dqmask<0] = bad_pix_val
         dqmask = zoom(dqmask, subsampling, order=0)
-    
-    if data is not None:
-        data = np.ma.array(data)
-        if dqmasks is not None:
-            data.mask = dqmask>dqmask_min
+        data.mask = data.mask | (dqmask>dqmask_min)
+        modified_dqmask = [None, dqmask, None]
+    else:
+        dqmask = None
+        modified_dqmask = [None,None,None]
+        dqmasks = [None,None,None]
     
     if show_plots:
         import matplotlib
         import matplotlib.pyplot as plt
-        if dqmasks is not None:
+        if dqmask is not None:
             plt.imshow(dqmask, interpolation='none')
             plt.show()
         if data is not None:
@@ -856,11 +802,10 @@ def stack_source(images, x, y, src_shape, index, tx_solutions,
             plt.show()
     # Reproject the images
     modified_data = [None, data, None]
-    modified_dqmask = [None, dqmask, None]
-    for n in [m for m in range(len(images)) if m!=index]:
-        modified_data[n],modified_dqmask[n], X0, Y0, new_pos = reproject_image(
+    for n in [m for m in range(len(images)) if m!=ref_index]:
+        modified_data[n],modified_dqmask[n] = reproject_image(
             images[n], x, y, x_new, y_new, tx_solutions[n], dqmasks[n],
-            max_offset, subsampling, show_plots, dqmask_min, bad_pix_val)
+            subsampling, show_plots, dqmask_min, bad_pix_val)
     # Only stack non-null images
     modified_data = [m for m in modified_data if m is not None]
     if len(modified_data)==0:
