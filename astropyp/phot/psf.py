@@ -258,7 +258,7 @@ def build_psf(img_data, aper_radius, sources=None, x='x', y='y',
 
 def perform_psf_photometry(data, catalog, psf, separation=None, 
         verbose=False, fit_position=True, pos_range=0, indices=None,
-        kd_tree=None, exptime=None):
+        kd_tree=None, exptime=None, pool_size=None):
     """
     Perform PSF photometry on all of the sources in the catalog,
     or if indices is specified, a subset of sources.
@@ -333,32 +333,61 @@ def perform_psf_photometry(data, catalog, psf, separation=None,
             kd_tree = KDTree(all_positions)
         idx, nidx = astropyp.catalog.find_neighbors(separation, 
             kd_tree=kd_tree)
+    # Set the number of processors to use
+    if pool_size is None:
+        import multiprocessing
+        pool_size = multiprocessing.cpu_count()
     
     # Fit each source to the PSF, calcualte its flux, and its new
     # position
-    for n in range(len(positions)):
-        if verbose:
-            #level = logger.getEffectiveLevel()
-            logger.setLevel(logging.INFO)
-            logger.info("Fitting {0}".format(group_id))
-            #logger.setLevel(level)
-        src_idx = src_indices[indices][n]
-        if separation is not None:
-            n_indices = nidx[idx==src_idx]
-            neighbor_positions = all_positions[n_indices]
-            neighbor_amplitudes = all_amplitudes[n_indices]
-        else:
-            neighbor_positions = []
-            neighbor_amplitudes = []
-        src_psf = SinglePSF(psf._psf_array, 
-            amplitudes[n], positions[n][0], positions[n][1],
-            subsampling=psf._subsampling,
-            neighbor_positions=neighbor_positions,
-            neighbor_amplitudes=neighbor_amplitudes)
-        psf_flux[src_idx], psf_flux_err[src_idx], residual, new_pos = \
-            src_psf.fit(data)
-        new_amplitudes[src_idx] = src_psf.amplitude.value
-        psf_x[src_idx], psf_y[src_idx] = new_pos
+    if pool_size==1:
+        for n in range(len(positions)):
+            if verbose:
+                #level = logger.getEffectiveLevel()
+                logger.setLevel(logging.INFO)
+                logger.info("Fitting {0}".format(group_id))
+                #logger.setLevel(level)
+            src_idx = src_indices[indices][n]
+            if separation is not None:
+                n_indices = nidx[idx==src_idx]
+                neighbor_positions = all_positions[n_indices]
+                neighbor_amplitudes = all_amplitudes[n_indices]
+            else:
+                neighbor_positions = []
+                neighbor_amplitudes = []
+            src_psf = SinglePSF(psf._psf_array, 
+                amplitudes[n], positions[n][0], positions[n][1],
+                subsampling=psf._subsampling,
+                neighbor_positions=neighbor_positions,
+                neighbor_amplitudes=neighbor_amplitudes)
+            psf_flux[src_idx], psf_flux_err[src_idx], residual, new_pos = \
+                src_psf.fit(data)
+            new_amplitudes[src_idx] = src_psf.amplitude.value
+            psf_x[src_idx], psf_y[src_idx] = new_pos
+    else:
+        import multiprocessing
+        if pool_size is None:
+            pool_size = multiprocessing.cpu_count()
+        pool = multiprocessing.Pool(
+            initializer=_init_psf_phot_process,
+            initargs=(data, all_positions, all_amplitudes, 
+                idx, nidx, psf, amplitudes, positions))
+        pool_args = []
+        for n in range(len(positions)):
+            src_idx = src_indices[indices][n]
+            pool_args.append((n,src_idx))
+        result = pool.map(_psf_phot_worker, pool_args)
+        pool.close()
+        pool.join()
+        
+        result = zip(*result)
+        psf_indices = np.where(indices)
+        psf_flux[psf_indices] = result[0]
+        psf_flux_err[psf_indices] = result[1]
+        new_amplitudes[psf_indices] = result[2]
+        psf_x[psf_indices] = result[3]
+        psf_y[psf_indices] = result[4]
+            
     # Save the psf derived quantities in the catalog
     # Ignore divide by zero errors that occur when sources
     # have zero psf flux (i.e. bad sources)
@@ -374,6 +403,59 @@ def perform_psf_photometry(data, catalog, psf, separation=None,
         catalog.sources['psf_y'] = psf_y
     np.seterr(**np_err)
     return catalog, src_psfs, kd_tree
+
+from astropyp.utils.misc import trace_unhandled_exceptions
+@trace_unhandled_exceptions
+def _init_psf_phot_process(data, all_positions, all_amplitudes,
+        idx, nidx, psf, amplitudes, positions):
+    """
+    Global variables for psf photometry processes
+    """
+    import multiprocessing
+    global gbl_data
+    global gbl_all_positions
+    global gbl_all_amplitudes
+    global gbl_idx
+    global gbl_nidx
+    global gbl_psf
+    global gbl_amplitudes
+    global gbl_positions
+    
+    gbl_data = data
+    gbl_all_positions = all_positions
+    gbl_all_amplitudes = all_amplitudes
+    gbl_idx = idx
+    gbl_nidx = nidx
+    gbl_psf = psf
+    gbl_amplitudes = amplitudes
+    gbl_positions = positions
+    logger.info("Initializing process {0}".format(
+        multiprocessing.current_process().name))
+
+@trace_unhandled_exceptions
+def _psf_phot_worker(args):
+    """
+    Worker to perform psf phot on individual images
+    """
+    n, src_idx = args
+    if gbl_nidx is not None:
+        n_indices = gbl_nidx[gbl_idx==src_idx]
+        neighbor_positions = gbl_all_positions[n_indices]
+        neighbor_amplitudes = gbl_all_amplitudes[n_indices]
+    else:
+        neighbor_positions = []
+        neighbor_amplitudes = []
+    
+    src_psf = SinglePSF(gbl_psf._psf_array, 
+        gbl_amplitudes[n], gbl_positions[n][0], gbl_positions[n][1],
+        subsampling=gbl_psf._subsampling,
+        neighbor_positions=neighbor_positions,
+        neighbor_amplitudes=neighbor_amplitudes)
+    psf_flux, psf_flux_err, residual, new_pos = \
+        src_psf.fit(gbl_data)
+    amplitudes = src_psf.amplitude.value
+    psf_x, psf_y = new_pos
+    return psf_flux, psf_flux_err, amplitudes, psf_x, psf_y
 
 class SinglePSF(Fittable2DModel):
     """

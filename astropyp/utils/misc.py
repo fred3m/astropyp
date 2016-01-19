@@ -424,3 +424,28 @@ def get_subpixel_patch(img_data, src_pos=None, src_shape=None,
     if normalize and obj_data is not None:
         obj_data = obj_data/np.max(obj_data)
     return obj_data, X, Y, new_pos
+
+import traceback, functools
+def trace_unhandled_exceptions(func):
+    """
+    Wrapper for multiprocessing pool functions. By default when a
+    multiprocessing pool fails the process exists but with no
+    traceback that describes the error that crashed the script.
+    By using this function wrapper on multiprocess pool functions
+    users get a traceback for each process that crashes.
+    
+    Use::
+        
+        @trace_unhandled_exceptions
+        def my_multiprocessing_func(x,y):
+            return x/y
+    """
+    @functools.wraps(func)
+    def wrapped_func(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except:
+            print 'Exception in '+func.__name__
+            traceback.print_exc()
+            raise Exception("Error in multiprocessing")
+    return wrapped_func

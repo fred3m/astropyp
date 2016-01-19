@@ -45,9 +45,11 @@ class Stack(phot.SingleImage):
         
         Parameters
         ----------
-        ccds: list of ccd names or list of ccds, optional
-            CCDs to detect sources. *Default is to detect sources
-            on all CCDs in the stack*
+        ccds: list of ccd names or list of ccds or `SingleImage`, optional
+            CCDs to detect sources. This can also be ``self.stack``, which is
+            the co-added `SingleImage` created when the individual images
+            are stacked. 
+            *Default is to detect sources on all CCDs in the stack*
         min_flux: int, optional
             Minimum flux needed for a source to be considered valid
         psf_amplitude: int, optional
@@ -66,8 +68,11 @@ class Stack(phot.SingleImage):
             Keyword arguments to use in 
             ``~astropyp.SingleImage.detect_sources``
         """
+        from astropyp.phot.phot import SingleImage
         if ccds is None:
             ccds = self.ccds
+        elif isinstance(ccds, SingleImage):
+            ccds = [ccds]
         
         # Set the amplitudes used by various routines to cut on signal 
         # to noise
@@ -179,7 +184,7 @@ class Stack(phot.SingleImage):
                 np.sqrt(np.sum(y_diff)**2/len(sources))))
         catalog = astropyp.catalog.Catalog(sources)
         if save_catalog:
-            self.catalog = catalog
+            self.merged_catalog = catalog
         return catalog
         
     def get_transforms(self, ra_name='ra', dec_name='dec', match_kwargs={}):
@@ -206,635 +211,213 @@ class Stack(phot.SingleImage):
             self.tx_solutions[pair].get_solution(catalogs[idx1],catalogs[idx2])
             logger.info('{0}:{1}'.format(pair, self.tx_solutions[pair].stats))
     
-    def create_psf(self, aper_radius=None, method='mean', 
-            create_catalog=True, good_indices=None, save_catalog=False,
-            single_thread=False, pool_size=None, subsampling=None,
-            max_offset=0):
+    def stack_images(self, combine_method='mean', dqmask_min=0, bad_pix_val=1,
+            buf=10, order=3, pool_size=None, slices=None):
         """
-        Create a PSF from the psf sources in the ccd catalog. By default this
-        will use multiprocessing to stack the sources as quickly as possible
-        but this can be disabled.
-        
-        Parameters
-        ----------
-        aper_radius: float, optional
-            Aperture radius to use for the psf. The default is to use the
-            aperture radius set for the stack, and if that hasn't been set
-            the aperture radius for the individual CCD's.
-        method: string, optional
-            This should be either 'median' or 'mean', describing how the
-            individual images should be combined into the psf.
-            *Default is 'mean'*
-        create_catalog: bool
-            Whether or not to create a catalog of psf stars.
-            *Default=True*
-        good_indices: string or list of arrays, optional
-            If good_indices is a string, index ``ccd.indices[good_indices]``
-            will be used for each CCD to filter the sources. Otherwise
-            good_indices should be a list of indices to use for each CCD.
-            If no god_indices are specified then all sources will be
-            merged
-        
-        save_catalog: bool
-            Whether or not to save the catalog
-        
-        Result
-        ------
-        psf: `~numpy.ndarray`
-            Subpixel array with the psf for the stack
+        Stack all of the images into a single co-added image. 
         """
-        from astropyp.phot.psf import SinglePSF
-        if aper_radius is None:
-            if not hasattr(self, 'aper_radius'):
-                if not hasattr(self.ccds[0], 'aper_radius'):
-                    raise ValueError("You must specify an aper_radius")
-                else:
-                    self.aper_radius = self.ccds[0].aper_radius
-            aper_radius = self.aper_radius
-        if subsampling is None:
-            if not hasattr(self, 'subsampling'):
-                self.subsampling = self.ccds[0].subsampling
-            subsampling = self.subsampling
-        
-        if method=='median':
-            combine = np.ma.median
-        elif method=='mean':
-            combine = np.ma.mean
-        else:
-            raise ValueError("Method must be either 'median' or 'mean'")
-        
-        src_shape = (2*aper_radius+1, 2*aper_radius+1)
-        
-        if create_catalog:
-            catalog = self.merge_catalogs(good_indices, save_catalog)
-        elif self.catalog is not None:
-            catalog = self.catalog
-        else:
-            raise Exception("You must create a catalog to create a psf")
-        
+        from astropyp.phot.phot import SingleImage
+        from astropyp.phot.stack import stack_full_images
         imgs = []
         dqmasks = []
         tx_solutions = []
         for n,ccd in enumerate(self.ccds):
-            imgs.append(ccd.img)
-            dqmasks.append(ccd.dqmask)
+            if slices is None:
+                imgs.append(ccd.img)
+                dqmasks.append(ccd.dqmask)
+            else:
+                imgs.append(ccd.img[slices])
+                dqmasks.append(ccd.dqmask[slices])
             if n!= self.ref_index:
                 tx_solutions.append(self.tx_solutions[(self.ref_index, n)])
             else:
                 tx_solutions.append(None)
-
-        # Select sources that pass PSF cuts in all images
-        psf_sources = catalog.sources
-        print('psf sources', len(psf_sources))
-        idx = np.zeros((len(psf_sources),), dtype=bool)
-        for col in ['idx_'+str(n) for n in self.ccd_indices]:
-            idx = idx | psf_sources[col].mask
-        psf_sources = psf_sources[~idx]
-        print('used psf sources', len(psf_sources))
-        if single_thread:
-            patches = []
-            for src in psf_sources:
-                data, dqmask = stack_source(imgs, src['x'], src['y'], 
-                    src_shape, self.ref_index, tx_solutions, 
-                    dqmasks, combine_method='mean', show_plots=False,
-                    subsampling=self.subsampling, max_offset=max_offset)
-                data = data/np.max(data)
-                patches.append(data)
-        else:
-            if pool_size is None:
-                pool_size = multiprocessing.cpu_count()
-                # Create a pool with the static (for all sources)
-                # variables to speed up processing
-                pool = multiprocessing.Pool(
-                    initializer=_init_multiprocess,
-                    initargs=(imgs, dqmasks, tx_solutions, src_shape,
-                        self.ref_index, method, self.subsampling))
-                src_coords = []
-                for src in psf_sources:
-                    src_coords.append((src['x'], src['y']))
-                result = pool.map(_multi_stack_worker, src_coords)
-                patches, dqmasks = zip(*result)
-                patches = [p/np.max(p) for p in patches]
-                pool.close()
-                pool.join()
-        psf_array = np.ma.array(patches)
-        psf_array = combine(psf_array, axis=0)
+        stack, stack_dqmask, patches = stack_full_images(
+            imgs, self.ref_index, tx_solutions, dqmasks, combine_method,
+            dqmask_min, bad_pix_val, buf, order, pool_size)
         
-        # Add a mask to hide values outside the aperture radius
-        if not hasattr(self, 'subsampling'):
-            self.subsampling = self.ccds[0].subsampling
-        radius = aper_radius*self.subsampling
-        ys, xs = psf_array.shape
-        yc,xc = (np.array([ys,xs])-1)/2
-        y,x = np.ogrid[-yc:ys-yc, -xc:xs-xc]
-        mask = x**2+y**2<=radius**2
-        circle_mask = np.ones(psf_array.shape)
-        circle_mask[mask]=0
-        circle_mask
-        psf_array = np.ma.array(psf_array, mask=circle_mask)
-        self.psf = SinglePSF(psf_array, 1., 0, 0, self.subsampling)
-        return self.psf
-    
-    def perform_psf_photometry(self, separation=None, 
-            verbose=False, fit_position=True, pos_range=0, indices=None,
-            kd_tree=None, exptime=None, pool_size=None, stack_method='mean',
-            save_catalog=True, single_thread=False):
-        """
-        Perform PSF photometry on all of the sources in the catalog,
-        or if indices is specified, a subset of sources.
-    
-        Parameters
-        ----------
-        separation: float, optional
-            Separation (in pixels) for members to be considered
-            part of the same group *Default=1.5*psf width*
-        verbose: bool, optional
-            Whether or not to show info about the fit progress.
-            *Default=False*
-        fit_position: bool, optional
-            Whether or not to fit the position along with the
-            amplitude of each source. *Default=True*
-        pos_range: int, optional
-            Maximum number of pixels (in image pixels) that
-            a sources position can be changed. If ``pos_range=0``
-            no bounds will be set. *Default=0*
-        indices: `~numpy.ndarray` or string, optional
-            Indices for sources to calculate PSF photometry.
-            It is often advantageous to remove sources with
-            bad pixels and sublinear flux to save processing time.
-            All sources not included in indices will have their
-            psf flux set to NaN. This can either be an array of
-            indices for the positions in self.catalog or 
-            the name of a saved index in self.indices
-        """
-        import astropyp.catalog
-        from astropyp.phot.psf import SinglePSF
-        
-        # If no exposure time was passed to the stack and all of the
-        # ccds had the same exposure time, use that to calcualte the
-        # psf magnitude
-        if exptime is None:
-            if hasattr(self, 'exptime'):
-                exptime = self.exptime
-            else:
-                same_exptime = True
-                exptime = np.nan
+        stack_params = OrderedDict(
+            [('gain', None), ('exptime', None),('aper_radius', None)])
+        for param in stack_params:
+            if not hasattr(self, param):
+                same_val = True
+                pval = None
                 for ccd in self.ccds:
-                    if np.isnan(exptime):
-                        exptime = ccd.exptime
-                    elif ccd.exptime != exptime:
-                        same_exptime = False
-                if not same_exptime:
-                    exptime = None
+                    if hasattr(ccd, param):
+                        if pval is None:
+                            pval = getattr(ccd, param)
+                        elif pval!=getattr(ccd, param):
+                            same_val = False
+                            continue
+                    else:
+                        same_val = False
+                        continue
+                if same_val:
+                    setattr(self, param, pval)
+                    stack_params[param] = pval
         
-        if hasattr(self.catalog, 'peak'):
-            peak = self.catalog.peak
-        else:
-            from astropyp.utils.misc import update_ma_idx
-            peak = [
-                update_ma_idx(self.ccds[n].catalog['peak'],
-                self.catalog['idx_'+str(n)]) 
-                    for n in self.ccd_indices]
-            peak = np.ma.mean(peak, axis=0)
-        
-        # Get the positions and estimated amplitudes of
-        # the sources to fit
-        
-        if indices is not None:
-            positions = zip(self.catalog.x[indices], 
-                            self.catalog.y[indices])
-            amplitudes = peak[indices]
-        else:
-            positions = zip(self.catalog.x, self.catalog.y)
-            amplitudes = peak
-    
-        src_count = len(positions)
-    
-        src_indices = np.arange(0,len(self.catalog.sources),1)
-        all_positions = np.array(zip(self.catalog.x, self.catalog.y))
-        all_amplitudes = peak
-        total_sources = len(all_amplitudes)
-        src_psfs = []
-    
-        psf_flux = np.ones((total_sources,))*np.nan
-        psf_flux_err = np.ones((total_sources,))*np.nan
-        psf_x = np.ones((total_sources,))*np.nan
-        psf_y = np.ones((total_sources,))*np.nan
-        new_amplitudes = np.ones((total_sources,))*np.nan
-    
-        # Find nearest neighbors to avoid contamination by nearby sources
-        if separation is not None:
-            if not hasattr(self, 'kdtree'):
-                from scipy import spatial
-                KDTree = spatial.cKDTree
-                self.kd_tree = KDTree(all_positions)
-            idx, nidx = astropyp.catalog.find_neighbors(separation, 
-                kd_tree=self.kd_tree)
-        # Get parameters to pass to the pool manager
-        imgs = []
-        dqmasks = []
-        tx_solutions = []
-        for n,ccd in enumerate(self.ccds):
-            imgs.append(ccd.img)
-            dqmasks.append(ccd.dqmask)
-            if n!= self.ref_index:
-                tx_solutions.append(self.tx_solutions[(self.ref_index, n)])
-            else:
-                tx_solutions.append(None)
-        
-        if pool_size is None:
-            pool_size = multiprocessing.cpu_count()
-        # Create a pool with the static (for all sources)
-        # variables to speed up processing
-        pool = multiprocessing.Pool(
-            processes=pool_size,
-            initializer=_init_multiprocess,
-            initargs=(imgs, dqmasks, tx_solutions, self.psf.shape,
-                self.ref_index, stack_method, self.subsampling, 
-                self.psf))
-        pool_args = []
-        # Fit each source to the PSF, calcualte its flux, and its new
-        # position
-        for n in range(len(positions)):
-            if indices is not None:
-                src_idx = src_indices[indices][n]
-            else:
-                src_idx = src_indices[n]
-            if separation is not None:
-                n_indices = nidx[idx==src_idx]
-                neighbor_positions = all_positions[n_indices]
-                neighbor_amplitudes = all_amplitudes[n_indices]
-            else:
-                neighbor_positions = []
-                neighbor_amplitudes = []
-            pool_args.append((amplitudes[n], 
-                (positions[n][1], positions[n][0]),
-                self.subsampling,
-                neighbor_positions,
-                neighbor_amplitudes))
-    
-        result = pool.map(_stack_psf_worker, pool_args)
-        pool.close()
-        pool.join()
-    
-        # Update the various psf array parameters
-        for n in range(len(positions)):
-            if indices is not None:
-                src_idx = src_indices[indices][n]
-            else:
-                src_idx = src_indices[n]
-            psf_flux[src_idx] = result[n][0]
-            psf_flux_err[src_idx] = result[n][1]
-            new_amplitudes[src_idx] = result[n][2]
-            psf_x[src_idx], psf_y[src_idx] = result[n][3]
-    
-        # Save the psf derived quantities in the catalog
-        # Ignore divide by zero errors that occur when sources
-        # have zero psf flux (i.e. bad sources)
-        if save_catalog:
-            np_err = np.geterr()
-            np.seterr(divide='ignore')
-            self.catalog.sources['psf_flux'] = psf_flux
-            self.catalog.sources['psf_flux_err'] = psf_flux_err
-            if exptime is not None:
-                psf_mag = -2.5*np.log10(psf_flux/exptime)
-                self.catalog.sources['psf_mag'] = psf_mag
-                self.catalog.sources['psf_mag_err'] = psf_flux_err/psf_flux
-            self.catalog.sources['psf_x'] = psf_x
-            self.catalog.sources['psf_y'] = psf_y
-            np.seterr(**np_err)
-        
-        return psf_flux, psf_flux_err
+        self.stack = SingleImage(img=stack.filled(0),
+            dqmask=stack_dqmask, gain=stack_params['gain'], 
+            exptime=stack_params['exptime'], 
+            aper_radius=stack_params['aper_radius'])
+        return stack, stack_dqmask
 
-def _init_multiprocess(imgs, dqmasks, tx_solutions, src_shape,
-        ref_index, combine_method, subsampling, psf=None):
+from astropyp.utils.misc import trace_unhandled_exceptions
+@trace_unhandled_exceptions
+def _init_full_stack(img_func, dqmask_func):
     """
-    This process is called each time a new process is initialized
+    Initialize a process by storing the interpolating functions
+    as global variables
     """
-    global gbl_imgs
-    global gbl_dqmasks
-    global gbl_tx_solutions
-    global gbl_src_shape
-    global gbl_ref_index
-    global gbl_combine_method
-    global gbl_psf
-    global gbl_subsampling
+    import multiprocessing
+    global gbl_img_func
+    global gbl_dqmask_func
     
-    gbl_imgs = imgs
-    gbl_dqmasks = dqmasks
-    gbl_tx_solutions = tx_solutions
-    gbl_src_shape = src_shape
-    gbl_ref_index = ref_index
-    gbl_combine_method = combine_method
-    gbl_subsampling = subsampling
-    gbl_psf = psf
-    logger.info("Multiprocessing Initialized")
-
-import traceback, functools
-def trace_unhandled_exceptions(func):
-    @functools.wraps(func)
-    def wrapped_func(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except:
-            print 'Exception in '+func.__name__
-            traceback.print_exc()
-            raise Exception("Error in multiprocessing")
-    return wrapped_func
+    gbl_img_func = img_func
+    gbl_dqmask_func = dqmask_func
+    
+    logger.info("Initializing process {0}".format(
+        multiprocessing.current_process().name))
+    return
 
 @trace_unhandled_exceptions
-def _multi_stack_worker(args):
+def _stack_worker(args):
     """
-    Worker to stack sources using multiprocessing
+    Reproject a subset of an image or dqmask.
     """
     x,y = args
-    result = stack_source(gbl_imgs, x, y, 
-        gbl_src_shape, gbl_ref_index, gbl_tx_solutions, 
-        gbl_dqmasks, combine_method=gbl_combine_method, 
-        show_plots=False)
-    return result
+    img_data = gbl_img_func(y, x, grid=False)
+    if gbl_dqmask_func is not None:
+        dqmask_data = gbl_dqmask_func(zip(y,x))
+    else:
+        dqmask_data = None
+    return (img_data, dqmask_data)
 
-@trace_unhandled_exceptions
-def _stack_psf_worker(args):
+def stack_full_images(imgs, ref_index, tx_solutions, dqmasks = None,
+            combine_method='mean', dqmask_min=0, bad_pix_val=1,
+            buf=10, order=3, pool_size=None):
     """
-    Worker to stack each source and perform psf photometry
-    on the stacked patch
-    """
-    from astropyp.phot.psf import SinglePSF
-    amplitude = args[0]
-    y0, x0 = args[1]
-    subsampling = args[2]
-    neighbor_positions = args[3]
-    neighbor_amplitudes = args[4]
-    
-    # Stack images centered on the source
-    patch, dqmask = stack_source(gbl_imgs, x0, y0, 
-        gbl_src_shape, gbl_ref_index, gbl_tx_solutions, 
-        gbl_dqmasks, combine_method=gbl_combine_method, 
-        show_plots=False, subsampling=1)
-    if patch is None:
-        return np.nan, np.nan, np.nan, (y0, x0)
-    # Perform PSF phot on the stacked source
-    src_psf = SinglePSF(gbl_psf._psf_array, 
-        amplitude, x0, y0,
-        subsampling=1,
-        neighbor_positions=neighbor_positions,
-        neighbor_amplitudes=neighbor_amplitudes)
-    x_radius = gbl_psf.shape[1]/gbl_subsampling
-    y_radius = gbl_psf.shape[0]/gbl_subsampling
-    X = np.linspace(x0-x_radius, x0+x_radius, gbl_psf.shape[1])
-    Y = np.linspace(y0-y_radius, y0+y_radius, gbl_psf.shape[0])
-    psf_flux, psf_flux_err, residual, new_pos = src_psf.fit(
-        patch=patch, X=X, Y=Y)
-    new_amplitude = src_psf.amplitude.value
-    return psf_flux, psf_flux_err, src_psf.amplitude.value, new_pos
-
-def reproject_image(img, x, y, new_x, new_y, tx_solution=None,
-        dqmask=None, subsampling=5, 
-        show_plot=False, dqmask_min=0, bad_pix_val=1):
-    """
-    Reproject one image onto another using image coordinates
-    
-    Parameters
-    ----------
-    img: array-like
-        Array containing the image to reproject
-    x,y: float
-        Coordinates at the center of the projection. If ``tx_solutions``
-        is None, these must be in the original image coordinates. 
-        Otherwise these must be in the reprojected image coordinates.
-    new_x, new_y: array-like
-        Coordinate positions for each pixel on the x and y axes in the
-        image. If ``tx_solutions`` is None, these must be in the 
-        original image coordinates. Otherwise these must be in the 
-        reprojected image coordinates.
-    tx_solution: `~astropyp.catalog.ImageSolution`, optional
-        Astrometric solution to transform from the current image coordinates
-        to the new image coordinates. If x, y, new_x, new_y are all in the
-        original image coordinates, set ``tx_solution`` to None.
-        *Default is None*
-    dqmask: `~numpy.ndarray`, optional
-        Data quality mask to apply to the reprojected image. This can
-        either be in the coordinate system of ``img``, in which case
-        ``reproject_dqmask=True`` or in the new coordinate system,
-        in which case ``reproject_dqmask=False``.
-    subsampling: int
-        Number of subdivisions of each pixel. *Default=5*
-    show_plot: bool, optional
-        Whether or not to show a plot of the reprojected image.
-        *Default=False*
-    dqmask_min: int, optional
-        Minimum value of a data quality mask that is accepted.
-        All pixels higher than ``dqmask_min`` will be masked in the
-        reprojected image. *Default=0*
-    bad_pix_val: int, optional
-        Value to set bad pixels to in the dqmask. This is only 
-        necessary if using a dqmask. *Default=1*
-    
-    Results
-    -------
-    modified_data: `~numpy.ndarray`
-        Data in the reprojected coordinate system
-    modified_dqmask: `~numpy.ndarray`
-        dqmask in the reprojected coordinate system. This will be
-        ``None`` if no dqmask was passed to the function.
-    X0: `~numpy.ndarray`
-        Coodinates on the X axis in the original coordinate system
-        after it has been subsampled and re-centered
-    Y0: `~numpy.ndarray`
-        Coodinates on the Y axis in the original coordinate system
-        after it has been subsampled and re-centered
-    new_pos: tuple
-        New position in the original coordinate system after it has
-        been subsampled and re-centered
+    Combine a set of images into a stack using a full set
+    of images using multiple processors (optional).
     """
     from scipy import interpolate
-    from astropy.nddata.utils import overlap_slices
-    import astropyp.utils
-    from astropyp.utils.misc import extract_array
-    from scipy.ndimage import zoom
+    from astropy.nddata import extract_array, overlap_slices
+    from astropyp.astrometry import ImageSolution
     
-    src_shape = (len(new_y)/subsampling, len(new_x)/subsampling)
+    buf = float(buf)
+    if pool_size is None:
+        import multiprocessing
+        pool_size = multiprocessing.cpu_count()
+    elif pool_size==0:
+        raise ValueError("pool_size must either be an integer>=1 "
+            "or None, which sets the number of pools to the number "
+            "of processors")
     
-    # Convert the centroid position from destination coordinates
-    # to current image coordinates and extract the subsampled image
-    if tx_solution is not None:
-        x0,y0 = tx_solution.transform_coords(x=x, y=y)
-    else:
-        x0,y0 = (x,y)
+    # Get the minimum size of the final stack by projecting all of
+    # the images onto the reference frame
+    img_x = np.arange(0, imgs[ref_index].shape[1], 1)
+    img_y = np.arange(0, imgs[ref_index].shape[0], 1)
+    xmin = img_x[0]-buf
+    xmax = img_x[-1]+buf
+    ymin = img_y[0]-buf
+    ymax = img_y[-1]+buf
+    for n in range(len(imgs)):
+        if n!=ref_index:
+            tx_x,tx_y = tx_solutions[n].transform_coords(
+                x=[img_x[0], img_x[-1]],
+                y=[img_y[0], img_y[-1]])
+            if tx_x[0]<xmin:
+                xmin = tx_x[0]
+            if tx_x[1]>xmax:
+                xmax = tx_x[1]
+            if tx_y[0]<ymin:
+                ymin = tx_y[0]
+            if tx_y[1]>ymax:
+                ymax = tx_y[1]
+    # Offset the referene image onto the coadd frame
+    x_tx = OrderedDict([('Intercept', xmin), ('A_1_0', 1.0), ('A_0_1', 0.0)])
+    y_tx = OrderedDict([('Intercept', ymin), ('B_1_0', 1.0), ('B_0_1', 0.0)])
     
-    data, slices = extract_array(img,
-        src_shape, (y0,x0), subsampling=subsampling, return_slices=True)
-    y_radius = int(src_shape[0]/2)
-    x_radius = int(src_shape[1]/2)
-    X0 = np.linspace(x0-x_radius, x0+x_radius, data.shape[1])
-    Y0 = np.linspace(y0-y_radius, y0+y_radius, data.shape[0])
+    # Modify the tx solutions to fit the coadd
+    for n in range(len(imgs)):
+        if n!= ref_index:
+            new_x_tx = tx_solutions[n].x_tx.copy()
+            new_y_tx = tx_solutions[n].y_tx.copy()
+            new_x_tx['Intercept'] += xmin
+            new_y_tx['Intercept'] += ymin
+            tx_solutions[n] = ImageSolution(x_tx=new_x_tx, y_tx=new_y_tx,
+                order=tx_solutions[n].order)
+        else:
+            tx_solutions[n] = ImageSolution(x_tx=x_tx, y_tx=y_tx, order=1)
     
-    #Z = interpolate.RectBivariateSpline(
-    #    Y0[slices[1][0]], X0[slices[1][1]], data[slices[1]])
-    X0 = X0[slices[1][1]]
-    Y0 = Y0[slices[1][0]]
-    Z = interpolate.RectBivariateSpline(Y0,X0, data[slices[1]])
-    
-    # Convert the coordinates from the destination to the
-    # current image and extract the interpolated pixels
-    if tx_solution is not None:
-        X,Y = tx_solution.transform_coords(x=new_x, y=new_y)
-    else:
-        X,Y = (new_x, new_y)
-    X = X[slices[1][1]]
-    Y = Y[slices[1][0]]
-    
-    modified_data = np.zeros(data.shape)
-    modified_data[:] = np.nan
-    modified_data[slices[1]] = Z(Y,X)
-    modified_data = np.ma.array(modified_data)
-    modified_data.mask = np.isnan(modified_data)
-    if dqmask is not None:
-        modified_dqmask = np.zeros(data.shape)
-        modified_dqmask[:] = bad_pix_val
-        new_dqmask = extract_array(dqmask, src_shape, (y0,x0), 
-            masking=True, fill_value=bad_pix_val)
-        new_dqmask = zoom(new_dqmask, subsampling, order=0)
-        new_dqmask = new_dqmask[slices[1]]
-        Xold,Yold = np.meshgrid(X0,Y0)
-        Xnew,Ynew = np.meshgrid(X,Y)
-        coords = zip(Yold.flatten(), Xold.flatten())
-        new_coords = zip(Ynew.flatten(), Xnew.flatten())
-        new_dqmask = interpolate.griddata(coords,
-            new_dqmask.flatten(),new_coords, method='nearest')
-        modified_dqmask[slices[1]] = new_dqmask.reshape(Xold.shape)
-        modified_data.mask = modified_data.mask | (modified_dqmask>dqmask_min)
-    else:
-        modified_dqmask = None
-    if show_plot:
-        import matplotlib
-        import matplotlib.pyplot as plt
-        plt.imshow(modified_data, interpolation='none')
-        plt.show()
-    return modified_data, modified_dqmask
-
-def stack_source(images, x, y, src_shape, ref_index, tx_solutions,
-        dqmasks=None, subsampling=5, combine_method='mean', 
-        show_plots=False, dqmask_min=0, bad_pix_val=1):
-    """
-    Stack all the images of a given source.
-    
-    Parameters
-    ----------
-    images: list of `~numpy.ndarray`'s
-        Images to stack
-    x,y: float
-        Central pixel of reprojected windows
-    src_shape: tuple of integers
-        Shape (y,x) of the patch to extract from each image. Typically
-        this is 2*aper_radius+1.
-    ref_index: int
-        Index in ``images`` and ``dqmasks`` of the image the others
-        are projected onto for the stack.
-    tx_solutions: list of `~astropyp.catalog.ImageSolution`s
-        Transformations to convert each image to the projected coordinates
-    dqmasks: list of `~numpy.ndarrays`'s, optional
-        Dqmasks for images to stack
-    subsampling: int
-        Number of subdivisions of each pixel. *Default=5*
-    combine_method: string
-        Method to use for the stack. This can be either 'median' or 'mean'.
-        *Default is 'mean'*
-    show_plots: bool, optional
-        Whether or not to show a plots of the reprojected images and
-        dqmasks. *Default=False*
-    dqmask_min: int, optional
-        Minimum value of a data quality mask that is accepted.
-        All pixels higher than ``dqmask_min`` will be masked in the
-        reprojected image. *Default=0*
-    bad_pix_val: int, optional
-        Value to set bad pixels to in the dqmask. This is only 
-        necessary if using a dqmask. *Default=1*
-    """
-    from astropyp.catalog import Catalog
-    from scipy.ndimage import zoom
-    from astropyp.utils.misc import extract_array
-    import astropyp.utils
-    
-    if combine_method=='median':
-        combine = np.ma.median
-    elif combine_method=='mean':
-        combine = np.ma.mean
-    else:
-        raise Exception(
-            "Combine method must be either 'median' or 'mean'")
-    # Get the patch from the original image
-    data = extract_array(images[ref_index],
-        src_shape, (y,x), subsampling=subsampling)
-    y_radius = src_shape[0]>>1
-    x_radius = src_shape[1]>>1
-    x_new = np.linspace(x-x_radius, x+x_radius, data.shape[1])
-    y_new = np.linspace(y-y_radius, y+y_radius, data.shape[0])
-    
-    # Mask bad pixels and edges
-    data = np.ma.array(data)
-    data.mask = np.isnan(data)
-    
-    if dqmasks is not None:
-        # Get the data quality mask for the original image and
-        # set any edge values to the bad_pix_val, and scale the dqmask
-        # with a nearest neighbor (pixelated) interpolation
-        dqmask = extract_array(dqmasks[ref_index], src_shape, (y,x), 
-                               fill_value=bad_pix_val)
-        dqmask[dqmask<0] = bad_pix_val
-        dqmask = zoom(dqmask, subsampling, order=0)
-        data.mask = data.mask | (dqmask>dqmask_min)
-        modified_dqmask = [None, dqmask, None]
-    else:
-        dqmask = None
-        modified_dqmask = [None,None,None]
-        dqmasks = [None,None,None]
-    
-    if show_plots:
-        import matplotlib
-        import matplotlib.pyplot as plt
+    coadd_x = np.arange(0, xmax-xmin, 1)
+    coadd_y = np.arange(0, ymax-ymin, 1)
+    Xc, Yc = np.meshgrid(coadd_x, coadd_y)
+    patches = []
+    # Reproject each image to the coadded image
+    for n in range(len(imgs)):
+        tx_x,tx_y = tx_solutions[n].transform_coords(
+            x=Xc.flatten(),y=Yc.flatten())
+        tx_x = np.array(tx_x).reshape(Xc.shape)
+        tx_y = np.array(tx_y).reshape(Yc.shape)
+        img_x = np.arange(0, imgs[n].shape[1], 1)
+        img_y = np.arange(0, imgs[n].shape[0], 1)
+        # Create an interpolating function and dqmask interpolating function
+        img_func = interpolate.RectBivariateSpline(img_y, img_x, 
+            imgs[n],kx=order,ky=order)
+        if dqmasks is not None:
+            points = (img_y, img_x)
+            values = dqmasks[n]
+            dqmask_func = interpolate.RegularGridInterpolator(
+                points, values, method='nearest', 
+                fill_value=bad_pix_val, bounds_error=False)
+        else:
+            dqmask_func = None
+        # If using a single processor, reproject the image and dqmask
+        # in one iteration
+        if pool_size==1:
+            patch = img_func(tx_y.flatten(), tx_x.flatten(), grid=False)
+            patch = patch.reshape(Xc.shape)
+            #Create the dqmask
+            if dqmasks is not None:
+                dqmask = dqmask_func(zip(tx_y.flatten(),tx_x.flatten()))
+                dqmask = dqmask.reshape(Xc.shape)
+                dqmask = dqmask.astype(bool)
+            else:
+                dqmask = None
+        # For multiple processors reproject line by line and recombine
+        # once they are all completed
+        else:
+            logger.info('Processors:{0}'.format(pool_size))
+            pool = multiprocessing.Pool(
+                processes=pool_size,
+                initializer=_init_full_stack,
+                initargs=(img_func, dqmask_func))
+            pool_args = []
+            for m in range(tx_x.shape[0]):
+                pool_args.append((tx_x[m], tx_y[m]))
+            result = pool.map(_stack_worker, pool_args)
+            pool.close()
+            pool.join()
+            patch, dqmask = zip(*result)
+            patch = np.array(patch)
+            dqmask = np.array(dqmask)
         if dqmask is not None:
-            plt.imshow(dqmask, interpolation='none')
-            plt.show()
-        if data is not None:
-            plt.imshow(data, interpolation='none')
-            plt.show()
-    # Reproject the images
-    modified_data = [None, data, None]
-    for n in [m for m in range(len(images)) if m!=ref_index]:
-        modified_data[n],modified_dqmask[n] = reproject_image(
-            images[n], x, y, x_new, y_new, tx_solutions[n], dqmasks[n],
-            subsampling, show_plots, dqmask_min, bad_pix_val)
-    # Only stack non-null images
-    modified_data = [m for m in modified_data if m is not None]
-    if len(modified_data)==0:
-        return None, None
-    elif len(modified_data)==1:
-        return modified_data[0], modified_dqmask[0]
-    
-    # Stack the images and combine the data quality masks
-    stack = np.ma.array(modified_data)
-    stack = combine(stack, axis=0)
-    dqmask = modified_data[0].mask
-    for n in range(1,len(modified_data)):
-        dqmask = np.bitwise_and(dqmask, modified_data[n].mask)
-    
-    if show_plots:
-        import matplotlib
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d.axes3d import Axes3D
-        Xmesh, Ymesh = np.meshgrid(x_new, y_new)
-        fig = plt.figure(figsize=(6, 6))
-        ax=fig.add_subplot(1,1,1, projection='3d')
-        ax.plot_wireframe(Xmesh, Ymesh, stack)
-        plt.show()
-        plt.contour(Xmesh,Ymesh,stack)
-        plt.axis('equal')
-        plt.show()
-        plt.imshow(stack, interpolation='none')
-        plt.show()
-        plt.imshow(dqmask, interpolation='none')
-        plt.show()
-    
-    return stack, dqmask
+            # Apply the dqmask to the image
+            patch[dqmask>dqmask_min] = np.nan
+            patch[dqmask>dqmask_min] 
+            patch = np.ma.array(patch)
+            patch.mask = np.isnan(patch)
+        
+        patches.append(patch)
+    # Stack the reprojected images and create a dqmask and wtmap
+    stack = np.ma.mean(patches, axis=0)
+    dqmask = patches[0].mask
+    wtmap = np.zeros(stack.shape)
+    weight = 1/len(patches)
+    for n in range(1,len(patches)):
+        dqmask = np.bitwise_and(dqmask, patches[n].mask)
+        wt = weight * ~patches[n].mask
+        wtmap += wt
+    dqmask = np.array(dqmask).astype('uint8')
+    return stack, dqmask, wtmap

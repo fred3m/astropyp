@@ -1,16 +1,13 @@
 from __future__ import division, print_function
-import numpy as np
+import time
 from collections import OrderedDict
+times = OrderedDict()
+times['0'] = time.time()
+import numpy as np
 import logging
-
-import matplotlib
-import matplotlib.pyplot as plt
 
 from astropy.io import fits
 import astropy.wcs
-from astropy import coordinates
-import astropy.units as apu
-from astropy import table
 
 # Astropy gives a lot of obnxious warnings that
 # are difficult to filter individually
@@ -20,12 +17,7 @@ warnings.simplefilter('ignore', category=AstropyWarning)
 warnings.simplefilter('ignore', category=UserWarning)
 
 import astropyp
-from astropyp.wrappers.astromatic import ldac
-from astropyp.phot import stack
-import bd_search
-
-#import cPickle as pickle
-import dill as pickle
+from astropyp import phot
 
 alogger = logging.getLogger('astropyp')
 alogger.setLevel(logging.INFO)
@@ -66,11 +58,9 @@ sex_params = {
     #'thresh': 1.5 # *bkg.globalrms
 }
 
-obj='F100'
-refname = '2MASS'
-#refname = 'UCAC4'
-fullref = ldac.get_table_from_ldac(ref_path+'{0}-{1}.fits'.format(obj,refname))
+times['init'] = time.time()
 
+obj='F100'
 min_flux = 1000
 min_amplitude = 1000
 good_amplitude = 50
@@ -79,6 +69,9 @@ frame = 1
 #explist = [442430, 442431, 442432]
 explist = [442433, 442434, 442435]
 aper_radius = 8
+gain=4.
+exptime=30.
+max_offset=3
 
 ccds = []
 
@@ -92,21 +85,102 @@ for expnum in explist:
     ccd = astropyp.phot.phot.SingleImage(header, img_data, dqmask_data,
         wcs=wcs, gain=4., exptime=30, aper_radius=aper_radius)
     ccds.append(ccd)
+times['load all fits'] = time.time()
 
 # Detect sources
-ccd_stack = stack.Stack(ccds, 1)
+ccd_stack = phot.stack.Stack(ccds, ref_index=1)
 ccd_stack.detect_sources(min_flux=min_flux, good_amplitude=good_amplitude,
     calibrate_amplitude=calibrate_amplitude, psf_amplitude=1000, 
     sex_params=sex_params, subtract_bkg=True, windowed=False)
+
+times['detect'] = time.time()
 # Get astrometric solution
 ccd_stack.get_transforms()
-# Create a catalog with all of the sources found on all of the CCDs
-result = ccd_stack.merge_catalogs(good_indices='calibrate')
-print('Total sources in merged catalog:', len(ccd_stack.catalog.sources))
+times['transforms'] = time.time()
 
-psf = ccd_stack.create_psf(good_indices='psf', create_catalog=True,
-    method='median')
-ccd_stack.perform_psf_photometry()
+#Stack images
+stack, dqmask = ccd_stack.stack(slices=[slice(0,500), slice(0,500)])
+times['stack'] = time.time()
 
-ccd_stack.catalog.sources.write(
-    '/media/data-beta/users/fmooleka/temp.ccd_stack.csv', format='ascii.csv')
+#Save Coadd and Dqmask
+primary_hdu = fits.PrimaryHDU()
+img_hdu = fits.CompImageHDU(stack)
+hdulist = fits.HDUList([primary_hdu, img_hdu])
+hdulist.writeto('/media/data-beta/users/fmooleka/temp/test_stack.fits',
+    clobber=True)
+
+primary_hdu = fits.PrimaryHDU()
+img_hdu = fits.CompImageHDU(dqmask)
+hdulist = fits.HDUList([primary_hdu, img_hdu])
+hdulist.writeto('/media/data-beta/users/fmooleka/temp/test_stack.dqmask.fits',
+    clobber=True)
+times['save'] = time.time()
+
+# Detect sources in the stack
+ccd_stack.detect_sources(ccd_stack.stack, min_flux=min_flux, 
+    good_amplitude=good_amplitude,
+    calibrate_amplitude=calibrate_amplitude, psf_amplitude=1000, 
+    sex_params=sex_params, subtract_bkg=True, windowed=False)
+times['stack detect'] = time.time()
+
+# Create the PSF for the stacked image
+ccd_stack.stack.create_psf()
+times['create PSF'] = time.time()
+
+#ccd.show_psf()
+#good_idx = ccd.catalog.sources['peak']>calibrate_amplitude
+good_idx = ccd_stack.stack.catalog.sources['peak']>good_amplitude
+good_idx = good_idx & (ccd_stack.stack.catalog.sources['pipeline_flags']==0)
+result = ccd_stack.stack.perform_psf_photometry(indices=good_idx)
+times['PSF photometry'] = time.time()
+
+time_keys = times.keys()
+for n in range(1,len(time_keys)):
+    key = time_keys[n]
+    print('{0}: {1:.2f}s'.format(key, times[key]-times[time_keys[n-1]]))
+print('Total time: {0:.2f}'.format(times[time_keys[-1]]-times[time_keys[0]]))
+
+ccd = ccd_stack.stack
+
+#good_idx = ccd.catalog.sources['peak']>calibrate_amplitude
+good_idx = ccd.catalog.sources['peak']>good_amplitude
+good_idx = good_idx & (ccd.catalog.sources['pipeline_flags']==0)
+good_idx = good_idx & np.isfinite(ccd.catalog.sources['psf_mag'])
+good_sources = ccd.catalog.sources[good_idx]
+
+print('good sources')
+print('rms', np.sqrt(np.sum(good_sources['psf_mag_err']**2/len(good_sources))))
+print('mean', np.mean(good_sources['psf_mag_err']))
+print('median', np.median(good_sources['psf_mag_err']))
+print('stddev', np.std(good_sources['psf_mag_err']))
+
+bad_count = np.sum(good_sources['psf_mag_err']>.05)
+print('bad psf error: {0}, or {1}%'.format(
+    bad_count, bad_count/len(good_sources)*100))
+print('Better than 5%: {0} of {1}'.format(
+    np.sum(good_sources['psf_mag_err']<=.05), len(good_sources)))
+print('Better than 2%: {0} of {1}'.format(
+    np.sum(good_sources['psf_mag_err']<=.02), len(good_sources)))
+good_sources['aper_flux','psf_flux','peak','psf_mag_err'][
+    good_sources['psf_mag_err']>.05]
+
+good_idx = ccd.catalog.sources['peak']>calibrate_amplitude
+good_idx = good_idx & (ccd.catalog.sources['pipeline_flags']==0)
+good_idx = good_idx & np.isfinite(ccd.catalog.sources['psf_mag'])
+good_sources = ccd.catalog.sources[good_idx]
+
+print('Calibrate Sources')
+print('rms', np.sqrt(np.sum(good_sources['psf_mag_err']**2/len(good_sources))))
+print('mean', np.mean(good_sources['psf_mag_err']))
+print('median', np.median(good_sources['psf_mag_err']))
+print('stddev', np.std(good_sources['psf_mag_err']))
+
+bad_count = np.sum(good_sources['psf_mag_err']>.05)
+print('bad psf error: {0}, or {1}%'.format(
+    bad_count, bad_count/len(good_sources)*100))
+print('Better than 5%: {0} of {1}'.format(
+    np.sum(good_sources['psf_mag_err']<=.05), len(good_sources)))
+print('Better than 2%: {0} of {1}'.format(
+    np.sum(good_sources['psf_mag_err']<=.02), len(good_sources)))
+good_sources['aper_flux','psf_flux','peak','psf_mag_err'][
+    good_sources['psf_mag_err']>.05]
