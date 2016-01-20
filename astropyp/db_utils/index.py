@@ -282,7 +282,7 @@ def add_files(connection, tbl_name, filenames=None, paths=None, recursive=False,
     logger.info('All duplicates: \n{0}'.format(duplicates))
     
     return new_files, duplicates
-
+    
 def query(sql, connection):
     """
     Query the index
@@ -301,61 +301,12 @@ def query(sql, connection):
     result: `~astropy.table.QTable`
     """
     from astropy.table import Table
-    from sqlalchemy import MetaData
-    import numpy as np
-    from collections import OrderedDict
+    import pandas
     
     engine = init_connection(connection)
-    connection = engine.connect()
-    meta = MetaData()
-    meta.reflect(engine)
-    
-    # get the table name as long as multiple tables aren't joined together
-    words = sql.split(' ')
-    if 'join' not in words:
-        from_idx = words.index('from')
-        idx = from_idx+1
-        if words[idx]=='':
-            while words[idx]=='':
-                idx+=1
-        tbl_name = words[idx]
-        set_dtype = True
-    else:
-        set_dtype = False
-    
-    # Query the database and check for a null result
-    result = connection.execute(sql)
-    col_names = result.keys()
-    result_list = result.fetchall()
-    if len(result_list)==0:
-        return Table()
-    
-    # temporary check
-    #for n in range(len(col_names)):
-    #    logger.info('column: {0}, type: {1}, python type: {2}'.format(
-    #        col_names[n],
-    #        meta.tables[tbl_name].columns[col_names[n]].type,
-    #        meta.tables[tbl_name].columns[col_names[n]].type.python_type))
-    
-    if set_dtype:
-        result_list = zip(*result_list)
-        data = [(col_names[n], 
-            np.array(result_list[n]).astype(
-                meta.tables[tbl_name].columns[col_names[n]].type.python_type))
-            for n in range(len(col_names))]
-        data = OrderedDict(data)
-        tbl = Table(data, masked=True)
-        for col in tbl.columns.keys():
-            # Strings cannot be checked by isfinite, so we ignore the type error they throw
-            try:
-                tbl[col].mask = ~np.isfinite(tbl[col])
-            except TypeError:
-                pass
-        return tbl
-    
-    result_list = [map(lambda x: x if x is not None else np.nan, row) 
-        for row in result_list]
-    return Table(rows=result_list, names=col_names)
+    df = pandas.read_sql(sql, engine)
+    tbl = Table.from_pandas(df)
+    return tbl
 
 def get_distinct(connection, tbl, column):
     """
