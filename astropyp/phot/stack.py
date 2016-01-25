@@ -212,12 +212,18 @@ class Stack(phot.SingleImage):
             logger.info('{0}:{1}'.format(pair, self.tx_solutions[pair].stats))
     
     def stack_images(self, combine_method='mean', dqmask_min=0, bad_pix_val=1,
-            buf=10, order=3, pool_size=None, slices=None):
+            buf=10, order=3, pool_size=None, slices=None, wcs=None):
         """
         Stack all of the images into a single co-added image. 
         """
         from astropyp.phot.phot import SingleImage
         from astropyp.phot.stack import stack_full_images
+        
+        if wcs is None:
+            import astropy.wcs
+            wcs = astropy.wcs.WCS(self.ccds[self.ref_index].header)
+        else:
+            wcs = None
         imgs = []
         dqmasks = []
         tx_solutions = []
@@ -232,9 +238,10 @@ class Stack(phot.SingleImage):
                 tx_solutions.append(self.tx_solutions[(self.ref_index, n)])
             else:
                 tx_solutions.append(None)
-        stack, stack_dqmask, patches = stack_full_images(
+        stack, stack_dqmask, patches, wcs = stack_full_images(
             imgs, self.ref_index, tx_solutions, dqmasks, combine_method,
-            dqmask_min, bad_pix_val, buf, order, pool_size)
+            dqmask_min, bad_pix_val, buf, order, pool_size, wcs=wcs)
+        self.wcs = wcs
         
         stack_params = OrderedDict(
             [('gain', None), ('exptime', None),('aper_radius', None)])
@@ -295,18 +302,19 @@ def _stack_worker(args):
 
 def stack_full_images(imgs, ref_index, tx_solutions, dqmasks = None,
             combine_method='mean', dqmask_min=0, bad_pix_val=1,
-            buf=10, order=3, pool_size=None):
+            buf=10, order=3, pool_size=None, wcs=None):
     """
     Combine a set of images into a stack using a full set
     of images using multiple processors (optional).
     """
     from scipy import interpolate
     from astropy.nddata import extract_array, overlap_slices
+    import astropy.wcs
     from astropyp.astrometry import ImageSolution
+    import multiprocessing
     
     buf = float(buf)
     if pool_size is None:
-        import multiprocessing
         pool_size = multiprocessing.cpu_count()
     elif pool_size==0:
         raise ValueError("pool_size must either be an integer>=1 "
@@ -337,6 +345,13 @@ def stack_full_images(imgs, ref_index, tx_solutions, dqmasks = None,
     # Offset the referene image onto the coadd frame
     x_tx = OrderedDict([('Intercept', xmin), ('A_1_0', 1.0), ('A_0_1', 0.0)])
     y_tx = OrderedDict([('Intercept', ymin), ('B_1_0', 1.0), ('B_0_1', 0.0)])
+    
+    # Create a rough WCS system for the image (to be used later for
+    # generating a better astrometric solution)
+    if wcs is not None:
+        wcs.wcs.crpix = [wcs.wcs.crpix[0]-xmin, wcs.wcs.crpix[1]-ymin]
+    else:
+        wcs = None
     
     # Modify the tx solutions to fit the coadd
     for n in range(len(imgs)):
@@ -420,4 +435,4 @@ def stack_full_images(imgs, ref_index, tx_solutions, dqmasks = None,
         wt = weight * ~patches[n].mask
         wtmap += wt
     dqmask = np.array(dqmask).astype('uint8')
-    return stack, dqmask, wtmap
+    return stack, dqmask, wtmap, wcs
