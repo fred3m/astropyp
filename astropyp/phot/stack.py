@@ -241,7 +241,7 @@ class Stack(phot.SingleImage):
         stack, stack_dqmask, patches, wcs = stack_full_images(
             imgs, self.ref_index, tx_solutions, dqmasks, combine_method,
             dqmask_min, bad_pix_val, buf, order, pool_size, wcs=wcs)
-        self.wcs = wcs
+        #self.wcs = wcs
         
         stack_params = OrderedDict(
             [('gain', None), ('exptime', None),('aper_radius', None)])
@@ -265,8 +265,8 @@ class Stack(phot.SingleImage):
         
         self.stack = SingleImage(img=stack.filled(0),
             dqmask=stack_dqmask, gain=stack_params['gain'], 
-            exptime=stack_params['exptime'], 
-            aper_radius=stack_params['aper_radius'])
+            exptime=stack_params['exptime'], wcs=wcs, 
+            aper_radius=stack_params['aper_radius'],)
         return stack, stack_dqmask
 
 from astropyp.utils.misc import trace_unhandled_exceptions
