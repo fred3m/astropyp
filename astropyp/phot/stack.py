@@ -414,6 +414,11 @@ def stack_full_images(imgs, ref_index, tx_solutions, dqmasks = None,
             result = pool.map(_stack_worker, pool_args)
             pool.close()
             pool.join()
+            
+            import resource
+            mem_use = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1000.
+            logger.info("Total memory usage after stack {0}".format(mem_use))
+            
             patch, dqmask = zip(*result)
             patch = np.array(patch)
             dqmask = np.array(dqmask)

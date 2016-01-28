@@ -159,7 +159,7 @@ class SingleImage:
     def perform_psf_photometry(self, method='neighbors',
             separation=None, 
             verbose=False, fit_position=True, 
-            pos_range=0, indices=None):
+            pos_range=0, indices=None, pool_size=None):
         """
         Perform PSF photometry on all of the sources in the catalog,
         or if indices is specified, a subset of sources.
@@ -210,7 +210,8 @@ class SingleImage:
                 separation=separation, 
                 verbose=verbose, fit_position=fit_position, 
                 pos_range=pos_range, indices=indices,
-                kd_tree=self.kd_tree, exptime=self.exptime)
+                kd_tree=self.kd_tree, exptime=self.exptime,
+                pool_size=pool_size)
             if self.kd_tree is None and kd_tree is not None:
                 self.kd_tree = kd_tree
         elif method=='group':

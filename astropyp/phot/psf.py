@@ -369,6 +369,7 @@ def perform_psf_photometry(data, catalog, psf, separation=None,
         if pool_size is None:
             pool_size = multiprocessing.cpu_count()
         pool = multiprocessing.Pool(
+            processes=pool_size,
             initializer=_init_psf_phot_process,
             initargs=(data, all_positions, all_amplitudes, 
                 idx, nidx, psf, amplitudes, positions))
