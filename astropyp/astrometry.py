@@ -10,6 +10,276 @@ from astropy import table
 
 logger = logging.getLogger('astropyp.astrometry')
 
+class Astrometry:
+    """
+    ImageSolution can be used to calculate multivariate polynomial
+    transformations from one coordinate to another
+    """
+    def __init__(self, transforms=None, 
+            order=None, init_mean=[None,None], init_stddev=[None,None], 
+            init_rms=[None,None], **kwargs):
+        if transforms is None:
+            transforms = OrderedDict()
+        self.transforms = transforms
+        self.order = order
+        self.stats = OrderedDict()
+        
+        for k,v in kwargs.items():
+            setattr(self, k, v)
+    def get_solution(self, catalog1, catalog2, 
+        src1, src2, dest1, dest2, order=None, match=False,
+        weights=None, method='statsmodels'):
+        """
+        Get transformation from one set of pixel coordinates to another
+        """
+        from astropyp.catalog import Catalog
+        
+        if order is None:
+            if self.order is None:
+                raise Exception("You must give an order for the polynomial")
+            order = self.order
+        if match:
+            if not isinstance(catalog1, Catalog):
+                cat1 = Catalog(catalog1)
+            if not isinstance(catalog2, Catalog):
+                cat2 = Catalog(catalog2)
+            # Match the catalog with the reference catalog
+            cat_coords = coordinates.SkyCoord(cat1.ra, cat1.dec, unit='deg')
+            refcat_coords = coordinates.SkyCoord(
+                cat2.ra, cat2.dec, unit='deg')
+            idx, d2, d3 = cat_coords.match_to_catalog_sky(refcat_coords)
+            matched = d2<separation
+            result = OrderedDict()
+            cat1 = catalog1[matched]
+            cat2 = catalog2[idx][matched]
+        else:
+            if len(catalog1)!=len(catalog2):
+                raise Exception("Catalogs either must be the same length "
+                    "or you must use matching")
+            cat1 = catalog1
+            cat2 = catalog2
+        
+        result1 = _map_coordinates(cat1[src1], cat1[src2], cat2[dest1], 
+            order, weights, method)
+        result2 = _map_coordinates(cat1[src1], cat1[src2], cat2[dest2],
+            order, weights, method)
+        self.transforms[(src1,dest1)] = result1
+        self.transforms[(src2,dest2)] = result2
+        self.create_fit_stats(cat1, cat2, src1, src2, dest1, dest2)
+        
+        if match:
+            result = (cat1,cat2,idx,matched)
+        else:
+            result = None
+        return result
+    def transform_coords(self, src1, src2, dest1, dest2, **kwargs):
+        """
+        Use the solution to transform the pixel coordinates
+        
+        Parameters
+        ----------
+        src1, src2: string
+            Names of the source columns in the transformation
+        dest1, dest2: string
+            Names of the destination columns in the transformation
+        kwargs: Dict of arrays
+            Keyword Arguments for the transformation. The keys should
+            always be the two source column names specified in ``src``
+            and the values should be arrays for each column
+        
+        Result
+        ------
+        result: tuple of arrays
+            Result of the astrometric solution transformation
+        """
+        result = _transform_coords(
+            kwargs[src1], kwargs[src2], src1, src2,
+            self.transforms[(src1,dest1)],
+            self.transforms[(src2,dest2)])
+        return result
+    def create_fit_stats(self, catalog1, catalog2, src1, src2,
+                        dest1, dest2):
+        kwargs = {
+            'src1': src1,
+            'src2': src2,
+            'dest1': dest1,
+            'dest2': dest2,
+            src1: catalog1[src1],
+            src2: catalog1[src2]
+        }
+        coord1,coord2 = self.transform_coords(**kwargs)
+        coord1_diff = coord1-catalog2[dest1]
+        coord2_diff = coord2-catalog2[dest2]
+        mean_diff = np.mean(coord1_diff)
+        std_diff = np.std(coord1_diff)
+        rms_diff = np.sqrt(mean_diff**2+std_diff**2)
+        self.stats[(src1,dest1)] = OrderedDict([
+            ('mean', mean_diff),
+            ('std', std_diff),
+            ('rms', rms_diff)])
+        mean_diff = np.mean(coord2_diff)
+        std_diff = np.std(coord2_diff)
+        rms_diff = np.sqrt(mean_diff**2+std_diff**2)
+        self.stats[(src2,dest2)] = OrderedDict([
+            ('mean', mean_diff),
+            ('std', std_diff),
+            ('rms', rms_diff)])
+        return self.stats
+
+def _get_power(x_str, power):
+    """
+    Get the string for a power of a variable in `_build_formula`
+    """
+    if power>1:
+        return '{0}**{1}'.format(x_str, power)
+    elif power==1:
+        return x_str
+    return None
+
+def _build_formula(x, y, order):
+    """
+    Build a polynomial formula of order ``order`` to
+    use in statsmodels.OLS or WLS
+    
+    Parameters
+    ----------
+    x: array-like
+        x Positions of sources
+    y: array-like
+        y Positions of sources
+    order: int
+        Order of the polynomial
+    
+    Result
+    ------
+    formula: str
+        Formula to use in statsmodels OLS or WLS
+    """
+    formula = 'result ~ '
+    first_term = True
+    for l in range(1,order+1):
+        for m in range(l+1):
+            x_power = _get_power('x',l-m)
+            y_power = _get_power('y',m)
+            if not first_term:
+                formula+='+'
+            else:
+                first_term=False
+            if x_power is None:
+                if m>1:
+                    formula += 'I({0})'.format(y_power)
+                else:
+                    formula += y_power
+            elif y_power is None:
+                if l-m>1:
+                    formula += 'I({0})'.format(x_power)
+                else:
+                    formula += x_power
+            else:
+                formula += 'I({0}*{1})'.format(x_power, y_power)
+    #logger.debug('formula: {0}'.(formula))
+    print 'formula: {0}'.format(formula)
+    return formula
+
+def _map_coordinates(coord1, coord2, ref_coord, order=3,
+        weights=None, method='statsmodels'):
+    """
+    Given a set of source coordinates and the reference coordinate, 
+    get the coefficients for the astrometric (or inverse) solution
+    
+    Parameters
+    ----------
+    coord1, coord2: array-like
+        Arrays of source coordinates
+    ref_coord: array-like
+        Array of reference coordinates
+    order: int
+        Order of the solution polynomial
+    param_name: string
+        The name of the parameter we are solving for (for example:
+        'x','y','ra','dec')
+    prefix: string
+        The prefix of the coefficient name
+    fitpackage: string, optional
+        Name of the fit package to use. Currently only the default
+        'statsmodels' is available.
+    """
+    if method=='statsmodels':
+        try:
+            import statsmodels.formula.api as smf
+        except:
+            raise Exception(
+                "'statsmodels' package required for this type of "
+                "astrometric solution")
+        formula = _build_formula(coord1, coord2, order)
+        tbl = table.Table([coord1, coord2, ref_coord],names=('x','y','result'))
+        if weights is None:
+            result = smf.OLS.from_formula(formula=formula, 
+                data=tbl).fit()
+        else:
+            result = smf.WLS.from_formula(formula=formula, 
+                data=tbl, weights=weights).fit()
+        result = {'statsmodels': result}
+    elif method=='lst_sq':
+        result = _lst_sq_fit(coord1, coord2, refcoord, order, weights)
+        result = {'lst_sq': result}
+    return result
+
+def _transform_coords(coord1, coord2, coord1_str, coord2_str, 
+                      coord1_solution, coord2_solution):
+    """
+    Transform a set of coordinates to another frame
+    
+    Parameters
+    ----------
+    coord1: float or array of floats
+        1st coordinate of each point
+    coord2: float or array of floats
+        2nd coordinate of each point
+    coord1_str: string
+        Name of the first coordinate (usually either 'x' or 'ra')
+    coord2_str: string
+        Name of the second coordinate (usually either 'y' or 'dec')
+    coord1_solution: dict
+        Result from _map_coordinates
+    coord2_solution: dict
+        Result from _map_coordinates
+    
+    Results
+    -------
+    coord1_result, coord2_result: float or array of floats
+        Transformed coordinates
+    """
+    #from astropyp.catalog import Catalog
+    ungroup = False
+    try:
+        len(coord1)
+    except TypeError:
+        coord1 = [coord1]
+        coord2 = [coord2]
+        ungroup = True
+    catalog = table.Table([coord1,coord2],
+                          names=('x','y'))
+                          #names=(coord1_str,coord2_str))
+    #catalog = Catalog(catalog)
+    
+    if 'statsmodels' in coord1_solution:
+        solution1 = coord1_solution['statsmodels'].predict
+        solution2 = coord2_solution['statsmodels'].predict
+    else:
+        raise ValueError("Unrecognized astrometric solution")
+    
+    coord1_result = solution1(catalog)
+    coord2_result = solution2(catalog)
+    if ungroup:
+        coord1_result = coord1_result[0]
+        coord2_result = coord2_result[0]
+    return coord1_result, coord2_result
+
+#########################################################
+# All Code below will be depreciated in futue releases
+#########################################################
+
 class AstrometricSolution:
     def __init__(self, x2ra=None, y2dec=None, ra2x=None, dec2y=None,
             crpix=[0,0], crval=[0,0], order=3, **kwargs):
@@ -159,7 +429,8 @@ class ImageSolution:
         stats = self.get_fit_stats()
         result = {'mean':stats[0], 'stddev':stats[1], 'rms':stats[2]}
         return result
-    def get_solution(self, catalog1, catalog2, order=None, match=False):
+    def get_solution(self, catalog1, catalog2, order=None, match=False,
+            weights=None, fit_package='statsmodels'):
         """
         Get transformation from one set of pixel coordinates to another
         """
@@ -192,9 +463,11 @@ class ImageSolution:
             cat2 = Catalog(cat2)
             
         x_result = _get_solution(cat1.x, cat1.y, cat2.x, 
-            order, 'ref_x', prefix='A')
+            order, 'ref_x', prefix='A', weights=weights, 
+            fit_package=fit_package)
         y_result = _get_solution(cat1.y, cat1.x, cat2.y, 
-            order, 'ref_y', prefix='B')
+            order, 'ref_y', prefix='B', weights=weights,
+            fit_package=fit_package)
         self.x_tx = x_result['params']
         self.y_tx = y_result['params']
         del x_result['params']
@@ -319,6 +592,24 @@ def _statsmodels_to_result(params):
             for column, value in params.iteritems()])
     return result
 
+def _lst_sq_fit(coord1, coord2, ref_coord, order, weights=None, prefix='A'):
+    from astropyp.astrometry import get_transform_tbl
+    A = get_transform_tbl(coord1, coord2, order, prefix)
+    columns = ['Intercept']+A.columns.keys()
+    tbl_dtype = A[A.columns.keys()[0]].dtype
+    A['Intercept'] = np.ones((len(A)), dtype=tbl_dtype)
+    A = A[columns]
+    A = A.as_array().view(tbl_dtype).reshape((len(A),len(A.columns)))
+    y = ref_coord
+    if weights is not None:
+        w = np.vstack([weights for n in range(A.shape[1])]).T
+        A = A*w
+        y = y*weights
+    result = np.linalg.lstsq(A, y)[0]
+    solution = OrderedDict([
+        (columns[n],result[n]) for n in range(len(columns))])
+    return solution
+
 def _get_solution(coord1, coord2, ref_coord, order, param_name, 
         prefix='A', fit_package='statsmodels', weights=None):
     """
@@ -362,6 +653,12 @@ def _get_solution(coord1, coord2, ref_coord, order, param_name,
             'params': _statsmodels_to_result(result.params),
             'statsmodels': result
         }
+    elif fit_package=='lst_sq':
+        result = _lst_sq_fit(coord1, coord2, ref_coord, order, weights,prefix)
+        result = {'params': result}
+    else:
+        raise ValueError("fit_package must be either statsmodels' or"
+            " 'lst_sq'")
     return result
 
 def clear_header_wcs(header):

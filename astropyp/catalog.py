@@ -114,6 +114,9 @@ class Catalog(object):
                     break
                 
         return self.sources[keys]
+    
+    def __len__(self):
+        return len(self.sources)
 
 def match_catalogs(ra0,dec0,ra1,dec1,units0='deg',units1='deg', 
         separation=1*apu.arcsec):
@@ -334,6 +337,8 @@ def find_neighbors(radius, positions=None, kd_tree=None):
                 "of positions or a kd_tree")
     pairs = kd_tree.query_pairs(radius)
     neighbors = np.array(list(pairs))
+    if len(neighbors)==0:
+        return np.array([], dtype=int), np.array([], dtype=int)
     neighbors = np.vstack([neighbors,np.fliplr(neighbors)])
     idx = neighbors[:,0]
     nidx = neighbors[:,1]
