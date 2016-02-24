@@ -41,7 +41,7 @@ def get_img_flags(dqmask, x, y, shape, edge_val=1):
 
 def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None, 
         sex_params={}, objects=None, subtract_bkg=False, gain=None, 
-        wcs=None, aper_radius=None, windowed=False, edge_val=1, origin=0,
+        wcs=None, aper_radius=None, windowed=True, edge_val=1, origin=0,
         transform='wcs'):
     """
     Load sources from an image and if a data quality mask is provided, included
@@ -139,74 +139,11 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
     
     if windowed:
         logger.info("using kron to get windowed positions")
-        # Calculate the kron radius
-        if 'kron_radius' not in objects:
-            objects['kron_radius'], flags = sep.kron_radius(
-                img_data, objects['x'], objects['y'], objects['a'], 
-                objects['b'], objects['theta'], 6.0)
-            objects['kron_flag'] = flags
-        eff_radius = objects['kron_radius']*np.sqrt(objects['a']*objects['b'])
-        use_circle = (sex_params['kron_k']*eff_radius < 
-                      sex_params['kron_min_radius'])
-        # Calculate the flux in the kron_radius
-        objects['kron_flux'] = np.nan
-        objects['kron_flux_err'] = np.nan
-        objects['kron_flag'] = flags
-        
-        use_circle = (use_circle | 
-            (objects['x']<sex_params['kron_k']*objects['kron_radius']*1.5) | 
-            (objects['y']<sex_params['kron_k']*objects['kron_radius']*1.5) | 
-            (objects['x']>img_data.shape[1]-
-                sex_params['kron_k']*objects['kron_radius']*1.5) | 
-            (objects['y']>img_data.shape[0]-
-                sex_params['kron_k']*objects['kron_radius']*1.5))
-        
-        kron_flux, kron_err, flags = sep.sum_ellipse(
-            img_data, objects['x'][~use_circle], objects['y'][~use_circle], 
-            objects['a'][~use_circle], objects['b'][~use_circle], 
-            objects['theta'][~use_circle], 
-            sex_params['kron_k']*objects['kron_radius'][~use_circle], 
-            subpix=1, gain=gain)
-        objects['kron_flux'][~use_circle] = kron_flux
-        objects['kron_flux_err'][~use_circle] = kron_err
-        objects['kron_flag'][~use_circle]=(
-            objects['kron_flag'][~use_circle] | flags)
-        
-        objects['kron_eff_radius'] = eff_radius
-        # If the kron radius is too small, use the minimum circular aperture 
-        # radius
-        flux, flux_err, flags = sep.sum_circle(
-            img_data, objects['x'][use_circle], objects['y'][use_circle], 
-            sex_params['kron_min_radius'], 
-            subpix=1, gain=gain)
-        objects['kron_flux'][use_circle] = flux
-        objects['kron_flux_err'][use_circle] = flux_err
-        objects['kron_flag'][use_circle]=objects['kron_flag'][use_circle]|flags
-
-        # Calculate the flux radius for half of the total flux (needed to get windowed positions)
-        objects['half_flux_radius'], flags = sep.flux_radius(img_data, 
-            objects['x'], objects['y'], 6.*objects['a'], 0.5, 
-            normflux=objects['kron_flux'], subpix=5)
-
-        # Get the windowed positions
-        sig = 2./2.35 * objects['half_flux_radius']
-        objects['xwin'], objects['ywin'], flags = sep.winpos(img_data, 
-            objects['x'], objects['y'], sig)
-    
-        # Set windowed WCS if possible
+        objects['xwin'], objects['ywin'] = get_winpos(
+            objects['x'], objects['y'], objects['a'])
         if wcs is not None:
-            objects['ra_win'], objects['dec_win'] = transform_method(
-                objects['xwin'], objects['ywin'], 0)
-        if exptime is not None:
-            # Calculate kron magnitudes
-            objects['kron_mag'] = -2.5*np.log10(objects['kron_flux']/exptime)
-            if gain is not None:
-                objects['kron_mag_err'] = 1.0857*np.sqrt(
-                    2*np.pi*objects['kron_radius']**2*bkg.globalrms**2+
-                    objects['kron_flux']/gain)/objects['kron_flux']
-            else:
-                objects['kron_mag_err'] = 1.0857*np.sqrt(
-                    2*np.pi*objects['kron_radius']**2*bkg.globalrms**2)
+            objects['rawin'], objects['decwin'] = transform_method(
+                objects['xwin'], objects['ywin'],0)
     
     # Calculate aperture flux
     if aper_radius is not None:
@@ -267,3 +204,29 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
     objects['src_idx'] = [n for n in range(len(objects))]
     
     return objects, bkg
+
+def get_winpos(data, x, y, a, subsampling=5):
+    """
+    Get windowed position. These are more accurate positions calculated
+    by SEP (SExtractor) created by iteratively recentering on the area
+    contained by the half-flux radius.
+    
+    Parameters
+    ----------
+    data: `~numpy.array`
+        Image data
+    x: array-like
+        X coordinates of the sources
+    y: array-like
+        Y coordinates of the sources
+    subsampling: int, optional
+        Number of subpixels for each image pixel
+        (used to calculate the half flux radius).
+        Default=5.
+    """
+    import sep
+    r, flag = sep.flux_radius(data, x, y, 
+        6.*a, 0.5, subpix=subsampling)
+    sig = 2. / 2.35 * r
+    xwin, ywin, flags = sep.winpos(data, x, y, sig)
+    return xwin, ywin
