@@ -74,7 +74,7 @@ class SingleImage:
     
     def detect_sources(self, sex_params={}, aper_radius=None, 
             subtract_bkg=False, gain=None, wcs=None, exptime=None,
-            windowed=False, edge_val=1, transform='wcs'):
+            windowed=True, edge_val=1, transform='wcs'):
         # Set optional parameters
         if aper_radius is None:
             aper_radius = self.aper_radius

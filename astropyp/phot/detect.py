@@ -140,7 +140,7 @@ def get_sources(img_data, dqmask_data=None, wtmap_data=None, exptime=None,
     if windowed:
         logger.info("using kron to get windowed positions")
         objects['xwin'], objects['ywin'] = get_winpos(
-            objects['x'], objects['y'], objects['a'])
+            img_data, objects['x'], objects['y'], objects['a'])
         if wcs is not None:
             objects['rawin'], objects['decwin'] = transform_method(
                 objects['xwin'], objects['ywin'],0)
