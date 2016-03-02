@@ -230,3 +230,58 @@ def get_winpos(data, x, y, a, subsampling=5):
     sig = 2. / 2.35 * r
     xwin, ywin, flags = sep.winpos(data, x, y, sig)
     return xwin, ywin
+
+def fix_winpos(ra, dec, rawin, decwin, kdtree=None, n_jobs=1):
+    """
+    Fix the windowed positions. SEP winpos has an issue where occasionally
+    the windowed positions drift in a crowded field, some times as much as
+    nearly an arcminute. This routine checks that the position is never
+    shifted by more than half the distance to the nearest source by using 
+    ra,dec when the rawin,decwin shift is too big.
+    
+    Parameters
+    ----------
+    ra: array-like
+        Array of ra positions
+    dec: array-like
+        Array of dec positions
+    rawin: array-like
+        Array of windowed ra positions
+    decwin: array-like
+        Array of windowed dec positions
+    n_jobs: int:
+        Number of parallel processors to use. Default=1
+    
+    Returns
+    -------
+    ra_final: array-like
+        Corrected ra windowed positions
+    dec_final: array_like
+        Corrected dec windowed positions
+    """
+    try:
+        from scipy import spatial
+    except ImportError:
+        raise ImportError(
+            "You must have scipy installed to fix the windowed positions")
+    pos = np.array([ra,dec])
+    pos = pos.T
+    # Build the kdtree unless the user passed one to the function
+    if kdtree is None:
+        KDTree = spatial.cKDTree
+        kdtree = KDTree(pos)
+    # Calculate the distance to nearest neighbors
+    # (used to determine accuracy of windowed coords)
+    ndist, nidx = kdtree.query(pos, k=2, n_jobs=1)
+    ndist = ndist[:,1]
+    # Find the sources whose window positions shifted by
+    # more than half the distance to the nearest neighbor
+    d = (rawin-ra)**2+(decwin-dec)**2
+    badwinpos = d>(ndist/2.)**2
+    # Use the best position available to match the catalogs
+    ra_final = rawin.copy()
+    ra_final[badwinpos] = ra[badwinpos]
+    dec_final = decwin.copy()
+    dec_final[badwinpos] = dec[badwinpos]
+    
+    return ra_final, dec_final
