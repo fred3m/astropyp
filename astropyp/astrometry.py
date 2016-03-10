@@ -28,7 +28,7 @@ class Astrometry:
             setattr(self, k, v)
     def get_solution(self, catalog1, catalog2, 
         src1, src2, dest1, dest2, order=None, match=False,
-        weights=None, method='statsmodels'):
+        weights=None, method='statsmodels', separation=1*apu.arcsec):
         """
         Get transformation from one set of pixel coordinates to another
         """
@@ -41,7 +41,11 @@ class Astrometry:
         if match:
             if not isinstance(catalog1, Catalog):
                 cat1 = Catalog(catalog1)
+            else:
+                cat1 = catalog1
             if not isinstance(catalog2, Catalog):
+                cat2 = Catalog(catalog2)
+            else:
                 cat2 = Catalog(catalog2)
             # Match the catalog with the reference catalog
             cat_coords = coordinates.SkyCoord(cat1.ra, cat1.dec, unit='deg')
@@ -177,8 +181,7 @@ def _build_formula(x, y, order):
                     formula += x_power
             else:
                 formula += 'I({0}*{1})'.format(x_power, y_power)
-    #logger.debug('formula: {0}'.(formula))
-    print 'formula: {0}'.format(formula)
+    logger.debug('formula: {0}'.format(formula))
     return formula
 
 def _map_coordinates(coord1, coord2, ref_coord, order=3,
