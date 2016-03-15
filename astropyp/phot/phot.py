@@ -416,6 +416,11 @@ class Exposure:
                 self.ccd_dict[frame].detect_sources(self.sex_params, 
                     gain=self.gain, aper_radius=self.aper_radius)
 
+########################################################
+# The Following functions are depreciated and will be
+# removed in a future release
+########################################################
+
 def calculate_magnitude(x, zero, color, extinct):
     """
     x[0] = reference in instrument band

@@ -297,6 +297,10 @@ def get_all_merged_indices(all_coord1, all_coord2, pool_size=None,
         Indices of rows that has an entry for *every* set of coordinates
     all_duplicates: array
         Indices of rows that have duplicate values
+    mean_coord1: array
+        Average coord1 for each row
+    mean_coord2: array
+        Average coord2 for each row
     """
     from astropyp.utils import misc
     
@@ -359,7 +363,7 @@ def get_all_merged_indices(all_coord1, all_coord2, pool_size=None,
         indices[n] = new_idx
         
     matched = np.sum([i.mask for i in indices],axis=0)==0
-    return indices, matched, all_duplicates
+    return indices, matched, all_duplicates, mean_coord1, mean_coord2
 
 def mask_catalog_columns(catalog, idx, columns=None, 
         catname=None, new_columns=None,
