@@ -1,3 +1,4 @@
+import os
 import logging
 
 logger = logging.getLogger('astropyp.calibrate.query')
@@ -112,9 +113,9 @@ catalog_info = {
             'epoch': 'ObsJD'
         },
         'info': {
-            'mjd': 'ObsJD',
+            'jd': 'ObsJD',
             'e_pos_units': 'mas',
-            'e_pos': '400',
+            'e_pos': 1000,
             'vizier_id': 'B/denis'
         }
     },
@@ -194,12 +195,13 @@ def query_cat(catalog, min_ra, max_ra, min_dec, max_dec, columns=None,
         else:
             column_filters = {}
     # Query the catalog in Vizier
-    logger.debug('columns:{0}'.format(columns))
+    logger.info('columns:{0}'.format(columns))
     v = Vizier(columns=columns, column_filters=column_filters, 
         catalog=catalog_info[catalog]['info']['vizier_id'])
     v.ROW_LIMIT=200000
     result = v.query_region(center, width='{0}m'.format(width*1.25), 
         height='{0}m'.format(height*1.25))
+    logger.warn(result[0].columns)
     refcat = result[0]
     
     return refcat
@@ -241,6 +243,7 @@ def update_refcat(cat_name, refcat, obs_dates):
             refcat[colname][x.mask] = np.nan
             del refcat[cat_info['columns'][colname]]
             #refcat.rename_column(cat_info['columns'][colname], colname)
+    
     # Change proper motion errors and position errors to mas
     for col in ['pm_ra', 'pm_dec', 'e_pm_ra', 'e_pm_dec']:
         if col in cat_info['columns']:
@@ -248,8 +251,13 @@ def update_refcat(cat_name, refcat, obs_dates):
     if 'e_ra' in refcat.columns and 'e_dec' in refcat.columns:
         refcat['e_ra'].convert_unit_to(apu.mas)
         refcat['e_dec'].convert_unit_to(apu.mas)
+    elif 'e_pos' in cat_info['info'].keys():
+        refcat['e_ra'] = cat_info['info']['e_pos']
+        refcat['e_ra'].unit = cat_info['info']['e_pos_units']
+        refcat['e_dec'] = cat_info['info']['e_pos']
+        refcat['e_dec'].unit = cat_info['info']['e_pos_units']
     else:
-        warnings.warn("{0} was missing 'e_ra' and 'e_dec'".format(cat_name))
+        logging.warn("{0} was missing 'e_ra' and 'e_dec'".format(cat_name))
     
     # Tables do not add,subtract, multiply, or divide quantities properly so
     # we need to incldue a conversion factor from mas to deg
@@ -286,20 +294,22 @@ def update_refcat(cat_name, refcat, obs_dates):
     
     return refcat
 
-def cds_query(pipeline, obj, catalog, columns=None, frames=None,
+def cds_query(obj, catalog, idx_connect, paths, columns=None, frames=None,
         proctype='InstCal', filter_columns=None, obs_dates=None):
     """
     Query vizier and return a reference catalog
     
     Parameters
     ----------
-    pipeline: astromatic_wrapper.Pipeline
-        Pipeline containing index info
     obj: str
         Name of the DECam object
     catalog: str
         Name of the reference catalog. This can either be a name, like ``SDSS9``, or a 
         Vizier Id, like ``V/139``
+    idx_connect: str
+        String to connect to decam index database
+    paths: str
+        Paths to various directories in a pipeline
     columns: str (optional)
         Space separated list of columns to query. If the first character is a ``*`` Vizier
         will return all of the default columns
@@ -314,22 +324,24 @@ def cds_query(pipeline, obj, catalog, columns=None, frames=None,
         reference catalog and the values are an operator (such as '>','<','=') and
         a value. For example ``filter_columns={'e_pmRA':'<200'}.
     """
-    from astropyp import index
-    from astorpy.table import vstack
+    from astropyp.db_utils import index
+    from astropy.table import vstack
     from astropy.time import Time
+    from astropy.io import fits
+    import numpy as np
     
     # Load a fits image for the given object
-    sql = "select * from decam_obs where object like '{0}%'".format(obj)
-    exposures = index.query(sql, pipeline.idx_connect_str).sort(['expnum'])
-    exp = exposures.iloc[0]
-    sql="select * from decam_files where expnum={0} and proctype='{1}'".format(
-        exp['expnum'], proctype
-    )
-    sql += " and prodtype='image'"
-    files = index.query(sql, pipeline.idx_connect_str).iloc[0]
-    hdulist = fits.open(files['filename'], memmap=True)
+    sql = "select * from decam_obs where OBJECT like '{0}%'".format(obj)
+    exposures = index.query(sql, idx_connect)
+    exposures.sort(['EXPNUM'])
+    exp = exposures[0]
+    sql="select * from decam_obs where EXPNUM={0} and PROCTYPE='{1}'".format(
+        exp['EXPNUM'], proctype)
+    sql += " and PRODTYPE='image'"
+    files = index.query(sql, idx_connect)[0]
+    hdulist = fits.open(files['filename'])
     if obs_dates is None:
-        dates = exposures['cal_date'].unique().tolist()
+        dates = np.unique(exposures['DTCALDAT']).tolist()
         obs_dates = Time(dates, format='iso').jyear
     logger.info('Loading {0} for {1}'.format(catalog, obj))
     
@@ -373,6 +385,6 @@ def cds_query(pipeline, obj, catalog, columns=None, frames=None,
     except ValueError:
         refcat.meta={}
         new_hdulist = aw.utils.ldac.convert_table_to_ldac(refcat)
-    cat_path = os.path.join(pipeline.paths['catalogs'], 'ref', "{0}-{1}.fits".format(obj, catalog))
+    cat_path = os.path.join(paths['catalogs'], 'ref', "{0}-{1}.fits".format(obj, catalog))
     new_hdulist.writeto(cat_path, clobber=True)
     logger.info('saved {0}'.format(cat_path))

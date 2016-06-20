@@ -231,7 +231,8 @@ def get_winpos(data, x, y, a, subsampling=5):
     xwin, ywin, flags = sep.winpos(data, x, y, sig)
     return xwin, ywin
 
-def fix_winpos(ra, dec, rawin, decwin, kdtree=None, n_jobs=1):
+def fix_winpos(ra, dec, rawin, decwin, kdtree=None, n_jobs=-1, 
+        separation=None):
     """
     Fix the windowed positions. SEP winpos has an issue where occasionally
     the windowed positions drift in a crowded field, some times as much as
@@ -250,7 +251,8 @@ def fix_winpos(ra, dec, rawin, decwin, kdtree=None, n_jobs=1):
     decwin: array-like
         Array of windowed dec positions
     n_jobs: int:
-        Number of parallel processors to use. Default=1
+        Number of parallel processors to use. 
+        Default=-1 (use all available processors)
     
     Returns
     -------
@@ -272,16 +274,18 @@ def fix_winpos(ra, dec, rawin, decwin, kdtree=None, n_jobs=1):
         kdtree = KDTree(pos)
     # Calculate the distance to nearest neighbors
     # (used to determine accuracy of windowed coords)
-    ndist, nidx = kdtree.query(pos, k=2, n_jobs=1)
+    ndist, nidx = kdtree.query(pos, k=2, n_jobs=n_jobs)
     ndist = ndist[:,1]
     # Find the sources whose window positions shifted by
     # more than half the distance to the nearest neighbor
     d = (rawin-ra)**2+(decwin-dec)**2
-    badwinpos = d>(ndist/2.)**2
+    badwinpos = (d>(ndist/2.)**2)
+    if separation is not None:
+        badwinpos = badwinpos | (d>separation**2)
     # Use the best position available to match the catalogs
     ra_final = rawin.copy()
     ra_final[badwinpos] = ra[badwinpos]
     dec_final = decwin.copy()
     dec_final[badwinpos] = dec[badwinpos]
     
-    return ra_final, dec_final
+    return ra_final, dec_final, badwinpos

@@ -40,9 +40,15 @@ def clip_color_outliers(color, ref_color, dbscan_kwargs={}, show_plots=True):
     if show_plots:
         import matplotlib
         import matplotlib.pyplot as plt
-        for gid in groups:
-            idx = gid==db.labels_
-            plt.plot(color[idx],ref_color[idx], '.')
+        #for gid in groups:
+        #    idx = gid==db.labels_
+        #    plt.plot(color[idx],ref_color[idx], '.')
+        idx = db.labels_>=0
+        plt.plot(color[~idx], ref_color[~idx], 'r.')
+        plt.plot(color[idx], ref_color[idx], '.')
+        plt.title('Outliers in red')
+        plt.xlabel('instrumental color')
+        plt.ylabel('reference color')
         plt.show()
 
     idx = db.labels_>-1
@@ -199,6 +205,7 @@ def calculate_coeffs_by_frame(instr_mag, instr_color, airmass,
     zero = np.zeros((frame_count,), dtype=float)
     color = np.zeros((frame_count,), dtype=float)
     extinct = np.zeros((frame_count,), dtype=float)
+    instr = np.zeros((frame_count,), dtype=float)
     frame_coeff = np.zeros((frame_count,), dtype='S4')
     
     # For each frame calculate the coefficients
@@ -207,12 +214,21 @@ def calculate_coeffs_by_frame(instr_mag, instr_color, airmass,
         result = calculate_izY_coeffs(
             instr_mag[idx][fidx], instr_color[idx][fidx], airmass[idx][fidx], 
             ref_mag[idx][fidx], ref_color[idx][fidx],
-            dbscan_kwargs, show_plots=False, cluster=False)
-        a[n],b[n],k1[n],k2[n],zero[n],extinct[n],color[n] = result[0]
+            dbscan_kwargs, show_plots=False, cluster=False,
+            color_init_params=color_init_params,
+            mag_init_params=mag_init_params)
+        if len(mag_init_params)==3:
+            a[n],b[n],k1[n],k2[n],zero[n],extinct[n],color[n] = result[0]
+        else:
+            a[n],b[n],k1[n],k2[n],zero[n],extinct[n],color[n],instr[n]=result[0]
         frame_coeff[n] = frame
     # Build the table
-    result = Table([a,b,k1,k2,zero,extinct,color,frame_coeff], 
-        names=('a','b','k1','k2','zero','extinct','color','frame'))
+    if len(mag_init_params)==3:
+        result = Table([a,b,k1,k2,zero,extinct,color,frame_coeff], 
+            names=('a','b','k1','k2','zero','extinct','color','frame'))
+    else:
+        result = Table([a,b,k1,k2,zero,extinct,color,instr,frame_coeff], 
+            names=('a','b','k1','k2','zero','extinct','color','instr','frame'))
     return result
 
 def calibrate_photometry_by_frame(instr_mag, instr_color, airmass, 
@@ -225,10 +241,17 @@ def calibrate_photometry_by_frame(instr_mag, instr_color, airmass,
         names=('frame','index'))
     joint_tbl = join(catalog, coeffs)
     joint_tbl.sort('index')
-    
-    mag = calibrate_magnitude_full(
-        instr_mag, airmass, instr_color,
-        joint_tbl['a'], joint_tbl['b'], joint_tbl['k1'], 
-        joint_tbl['k2'], joint_tbl['zero'], 
-        joint_tbl['extinct'], joint_tbl['color'])
+    if 'instr' in coeffs.columns.keys():
+        mag = calibrate_magnitude_full(
+            instr_mag, airmass, instr_color,
+            joint_tbl['a'], joint_tbl['b'], joint_tbl['k1'], 
+            joint_tbl['k2'], joint_tbl['zero'], 
+            joint_tbl['extinct'], joint_tbl['color'],
+            joint_tbl['instr'])
+    else:
+        mag = calibrate_magnitude_full(
+            instr_mag, airmass, instr_color,
+            joint_tbl['a'], joint_tbl['b'], joint_tbl['k1'], 
+            joint_tbl['k2'], joint_tbl['zero'], 
+            joint_tbl['extinct'], joint_tbl['color'])
     return mag
