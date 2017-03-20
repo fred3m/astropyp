@@ -137,6 +137,25 @@ catalog_info = {
             'e_pos_units': 'mas',
             'vizier_id': 'I/284'
         }
+    },
+    'GAIA': {
+        'columns': {
+            'ra': 'RA_ICRS',
+            'dec': 'DE_ICRS',
+            'e_ra': 'e_RA_ICRS',
+            'e_dec': 'e_DE_ICRS',
+            'pm_ra': 'pmRA',
+            'pm_dec': 'pmDE',
+            'e_pm_ra': 'e_pmRA',
+            'e_pm_dec': 'e_pmDE',
+            'epoch': 'Epoch'
+        },
+        'info': {
+            'jyear': 'Epoch',
+            'pm_units': 'mas',
+            'e_pos_units': 'mas',
+            'vizier_id': 'I/337'
+        }
     }
 }
 
