@@ -217,7 +217,8 @@ def query_cat(catalog, min_ra, max_ra, min_dec, max_dec, columns=None,
     logger.info('columns:{0}'.format(columns))
     v = Vizier(columns=columns, column_filters=column_filters, 
         catalog=catalog_info[catalog]['info']['vizier_id'])
-    v.ROW_LIMIT=200000
+    v.ROW_LIMIT=1000000
+    logger.info("ROW LIMIT = {0}".format(v.ROW_LIMIT))
     result = v.query_region(center, width='{0}m'.format(width*1.25), 
         height='{0}m'.format(height*1.25))
     logger.warn(result[0].columns)
